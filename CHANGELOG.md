@@ -311,5 +311,229 @@ está diseñado para degradar sin romperse.
 
 ---
 
-*Documento generado durante la puesta en marcha del proyecto. Registra decisiones
-técnicas y su fundamento, no solo los cambios.*
+## 🔴 Fase 4 — Cierre de brechas de seguridad y pipeline verde
+
+La CI falló en su primera ejecución. La causa raíz no era un error de código, sino
+**dependencias obsoletas**. El job de seguridad hizo exactamente su trabajo.
+
+### 11. `vitest` declarado pero no instalado
+
+**Síntoma en CI:**
+
+```
+sh: 1: vitest: not found
+```
+
+**Causa:** el script `"test": "vitest run"` existía en `package.json`, pero el paquete
+`vitest` nunca se añadió a `devDependencies`. Un script sin su dependencia es un
+error latente: en local nunca se ejecuta, solo falla cuando la CI lo invoca.
+
+**Solución:**
+
+```bash
+npm install -D vitest
+```
+
+**Aprendizaje:** un script en `package.json` es una **declaración de intención**.
+Si la herramienta no está instalada, el fallo aparece tarde y en otro entorno.
+CI es donde se descubren esos errores.
+
+### 12. Vulnerabilidades críticas en Next.js 14.1.0
+
+**Síntoma en CI:**
+
+```
+2 vulnerabilities (1 high, 1 critical)
+Severity: critical
+  Next.js Allows a Denial of Service (DoS) with Server Actions — GHSA-7m27-7ghc-44w9
+  Next has a Denial of Service with Server Components (incomplete fix) — GHSA-5j59-xgg2-r9c4
+```
+
+**Investigación.** Antes de actualizar se verificó si existía un parche en la misma
+rama, para evitar un salto mayor de versión:
+
+| Versión | Resultado de `npm audit` |
+|---|---|
+| `next@14.1.0` (actual) | 1 critical + 1 high ❌ |
+| `next@14.2.35` (último parche de 14) | 1 critical + 1 high ❌ |
+| `next@16.3.8` (latest) | **0 vulnerabilidades** ✅ |
+
+**Conclusión:** la rama 14 no tiene parche de seguridad. Ambas advertencias son de
+**Denial of Service**, lo que significa que un atacante puede tornar el servicio
+inaccesible con una petición crafted. En un repositorio público, esto queda
+registrado en el historial y en el panel de advisories de GitHub.
+
+**Solución:** migración a Next 16.3.8 con su cadena de peer dependencies:
+
+| Paquete | Antes | Después | Motivo |
+|---|---|---|---|
+| `next` | 14.1.0 | 16.3.8 | Resuelve las CVEs |
+| `react` / `react-dom` | 18.2.0 | 19.3.0 | Peer dep de Next 16 |
+| `eslint` | 8.57.0 | 9.39.5 | `eslint-config-next@16` requiere ESLint ≥ 9 |
+| `eslint-config-next` | 14.1.0 | 16.3.8 | Debe coincidir con `next` |
+| `lucide-react` | 0.344.0 | 1.49.0 | Versión antigua, sin soporte para React 19 |
+| `@types/react(-dom)` | 18.x | 19.x | Alineado con React 19 |
+| `@types/node` | 20.x | 24.x | Alineado con el runtime |
+
+**Conflictos de peer dependencies.** La actualización no fue un solo comando. npm
+rechazó el install en cadena dos veces:
+
+1. `eslint@8` es incompatible con `eslint-config-next@16` (requiere ≥ 9)
+2. `lucide-react@0.344` declara `react: ^18` como peer, no acepta React 19
+
+Ambos se resolvieron **actualizando la dependencia**, nunca con `--legacy-peer-deps`.
+Esa bandera solo silencia el aviso: acepta un árbol que puede romperse en runtime.
+
+### 13. `next lint` eliminado en Next 16
+
+**Síntoma:**
+
+```
+$ npx next lint
+Invalid project directory provided, no such directory: D:\ai-project-hub\lint
+```
+
+El comando `next lint` fue deprecado en Next 15 y **eliminado en Next 16**. Ahora el
+CLI interpreta `lint` como el nombre de un directorio a construir.
+
+**Solución:** invocar ESLint directamente y migrar al **flat config**.
+
+```diff
+- "lint": "next lint"
++ "lint": "eslint ."
+```
+
+```diff
+- // .eslintrc.json  (formato legacy, no soportado por ESLint 9)
+- { "extends": "next/core-web-vitals" }
++ // eslint.config.mjs  (flat config)
++ import { defineConfig, globalIgnores } from 'eslint/config';
++ import nextPlugin from '@next/eslint-plugin-next';
++
++ export default defineConfig([
++   nextPlugin.configs['core-web-vitals'],
++   globalIgnores(['.next/**', 'node_modules/**', 'next-env.d.ts']),
++ ]);
+```
+
+**Sobre el preset:** `eslint-config-next@16` expone `.`, `./core-web-vitals`,
+`./typescript` y `./parser`. El objeto `core-web-vitals` es un **configo único**, no
+un array, por lo que se pasa directo en el array de `defineConfig` — sin `...`.
+
+### 14. Vitest vs. `"jsx": "preserve"`
+
+**Síntoma:**
+
+```
+Failed to parse source for import analysis because the content contains
+invalid JS syntax. If you use tsconfig.json, make sure to not set jsx to preserve.
+```
+
+**Diagnóstico.** Es una colisión entre dos herramientas que quieren controlar la
+misma cosa:
+
+- `tsconfig.json` declara `"jsx": "preserve"` porque **Next.js** transpila el JSX en
+  su propio pipeline (Turbopack). `preserve` significa "no lo toques".
+- **Vitest** no usa ese pipeline. Transforma los archivos con **oxc** y necesita JSX
+  ya convertido a funciones (`jsx()`), o el parser de Vite no puede analizarlo.
+
+Dos detalles que costaron tiempo y conviene documentar:
+
+1. **Vitest 5 usa `oxc`, no `esbuild`.** Configurar `esbuild: { jsx: 'automatic' }`
+   se ignora en silencio con el aviso `oxc options will be used and esbuild options
+   will be ignored`. La opción correcta es `oxc: { jsx: { runtime: 'automatic' } }`.
+2. **El archivo debe ser `.mts`.** Con `.ts`, Vite lo carga como CommonJS y falla
+   con `ESM syntax in a file loaded as CommonJS`, porque `package.json` no declara
+   `"type": "module"`.
+
+**Solución:** `vitest.config.mts` con el alias `@/` replicado y el runtime de JSX
+explícito para oxc.
+
+> Next 16 también corrigió `tsconfig.json` automáticamente: cambió `jsx` a
+> `react-jsx` y añadió `.next/dev/types/**/*.ts` al `include`. Es el comportamiento
+> esperado con el runtime automático de React.
+
+### 15. Primer test real
+
+Antes de tener vitest configurado, la CI ejecutaba `npm test -- --passWithNoTests`,
+que **nunca fallaba** aunque no existiera un solo test. Una puerta que siempre
+abre no es una puerta.
+
+Se creó `src/app/__tests__/app.test.tsx` con 2 tests sobre los contratos públicos del
+layout y la home, y la CI ahora corre `npm test` **sin** el flag de tolerancia.
+
+### 16. CI actualizado
+
+| Cambio | Antes | Después | Motivo |
+|---|---|---|---|
+| Versión de Node | 20 | 24 | Node 20 estaba deprecado en los runners |
+| Job `build` | ❌ no existía | ✅ agregado | Ninguna CI verificaba que la app compilara |
+| Auditoría | `--production` | `--omit=dev` | Flag deprecado en npm 11+ |
+| Tests | `--passWithNoTests` | `npm test` | Deja de tolerar suites vacías |
+| Dependencias de jobs | — | `npm ci` | Determinista: usa el lockfile, no resuelve de nuevo |
+
+`npm ci` es preferible a `npm install` en CI: instala **exactamente** las versiones
+del `package-lock.json` y falla si este y `package.json` no coinciden.
+
+---
+
+## ✅ Estado final tras la Fase 4
+
+```
+✓ Compiled successfully (Next.js 16.3.8 · Turbopack)
+
+Route (app)
+├ ○ /
+├ ○ /_not-found
+├ ƒ /api/chat
+└ ○ /Dashboard
+```
+
+| Verificación | Resultado |
+|---|---|
+| `npm run type-check` | ✅ 0 errores |
+| `npm run lint` | ✅ 0 errores |
+| `npm test` | ✅ 2 tests pasando |
+| `npm audit --omit=dev` | ✅ 0 vulnerabilidades |
+| `npm run build` | ✅ 4 rutas generadas |
+
+`ƒ /api/chat` indica que la ruta se renderiza **bajo demanda** (dinámica), no de
+forma estática. Es el comportamiento correcto para un endpoint que consulta la base
+de datos o recibe peticiones POST.
+
+---
+
+## 📌 Pendientes para la próxima fase
+
+| # | Tarea | Motivo |
+|---|---|---|
+| 1 | `.env.local` con `DATABASE_URL` | Sin base de datos, el dashboard solo muestra mocks |
+| 2 | `npx prisma migrate dev --name init` | Crear las tablas, incluido el nuevo campo `status` |
+| 3 | **Autorización en `/api/chat`** | **Crítico:** hoy cualquiera lee documentos de cualquier `projectId` |
+| 4 | Conectar un LLM real | `systemPrompt` se construye pero nunca se envía; no hay embeddings ni `pgvector` |
+| 5 | Tailwind (`globals.css`, `tailwind.config.js`) | Falta la capa de estilos |
+| 6 | Renombrar `src/app/Dashboard` → `dashboard` | Las rutas Next.js van en minúsculas |
+| 7 | `.env.example` | Documentar variables sin exponer secretos |
+| 8 | Deploy en Vercel | Conectar con `npx vercel` y configurar el workflow |
+
+> El punto 3 es el más urgente. Tal como está, `POST /api/chat` acepta cualquier
+> `projectId` y devuelve sus documentos sin comprobar quién pregunta. Es un fallo de
+> **autorización**, y no se arregla con los advisories: requiere Clerk.
+
+---
+
+## 🔑 Conceptos introducidos en esta fase
+
+| Concepto | Dónde apareció |
+|---|---|
+| **Peer dependencies** | `react` 19 obliged a actualizar `lucide-react` |
+| **Superficie de ataque** | Por qué un DoS en un repo público importa |
+| **CVE / advisory** | GitHub Advisory Database como fuente |
+| **Flat config** | `eslint.config.mjs` reemplaza `.eslintrc.json` en ESLint 9 |
+| **oxc vs esbuild** | Vitest 5 usa oxc; configurar esbuild se ignora |
+| **`npm ci` vs `npm install`** | Determinismo en CI |
+| **Tests que no fallan** | El riesgo de `--passWithNoTests` |
+| **Deprecación vs eliminación** | `next lint` existió como warning, luego se eliminó |
+| **Deprecación de runtime** | Node 20 en runners, Prisma 5 frente a Prisma 8 |
+
+---

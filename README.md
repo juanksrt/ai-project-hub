@@ -18,7 +18,7 @@ Cada documento se divide en fragmentos indexados para permitir recuperar context
 
 | Capa | Tecnología |
 |---|---|
-| Framework | Next.js 15 (App Router) |
+| Framework | Next.js 16 (App Router) |
 | Lenguaje | TypeScript (modo estricto) |
 | UI | Shadcn/ui + Tailwind CSS |
 | ORM | Prisma |
@@ -115,6 +115,7 @@ ai-project-hub/
 │   │   └── features/   # Componentes con lógica de negocio
 │   ├── lib/            # Cliente de Prisma, utilidades, conectores IA/RAG
 │   └── types/          # Interfaces y tipos TypeScript
+├── src/app/__tests__/    # Tests con Vitest
 └── .github/workflows/  # CI/CD
 ```
 
@@ -123,7 +124,7 @@ ai-project-hub/
 ## ⚙️ Configuración local
 
 ### Requisitos
-- **Node.js 20+**
+- **Node.js 20.9+** (probado en 24)
 - **PostgreSQL 15+**
 - Cuenta en **Clerk**
 
