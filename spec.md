@@ -1,0 +1,39 @@
+# spec.md — AI Project Hub
+
+## 1. Visión del Producto
+Plataforma web SaaS de gestión de proyectos y tareas con un **asistente RAG integrado** (Retrieval-Augmented Generation) que responde preguntas sobre la documentación técnica de los proyectos sin alucinaciones y con citas explícitas a los documentos originales.
+
+## 2. Metodología de Desarrollo: Spec-Driven Development (SDD)
+- **Fase de Requerimientos**: Toda nueva funcionalidad se define primero en este archivo `spec.md` (validación de la intención humana) antes de generar código.
+- **Flujo Spec-First / Spec-Anchored**: Las especificaciones y el código se mantienen sincronizados. El código es un artefacto derivado de la intención especificada.
+
+## 3. Stack Tecnológico Principal
+- **Frontend**: Next.js (App Router, React Server Components) + TypeScript (Modo Estricto) + Tailwind CSS + Shadcn/ui.
+- **Backend & Base de Datos**: PostgreSQL (Supabase / Neon) + Prisma ORM + Server Actions.
+- **Módulo de IA & RAG**: Vercel AI SDK + Embeddings (OpenAI / Gemini) + Búsqueda Vectorial (pgvector).
+- **Autenticación & Sesiones**: Clerk / NextAuth.js.
+- **Calidad, CI/CD y Seguridad**: GitHub Actions (Lint, Type-Check, Tests unitarios/integración con Jest/Playwright y Claude Code Security Review).
+
+## 4. Módulos y Requerimientos del Sistema
+### Módulo 1: Autenticación y Control de Acceso
+- Registro e inicio de sesión seguro (Email, OAuth GitHub/Google).
+- Control de roles (Administrador, Desarrollador, Cliente).
+
+### Módulo 2: Dashboard de Proyectos y Tareas
+- CRUD completo de Proyectos y Tableros Kanban/Listas.
+- Estados de tareas: *Pendiente*, *En Proceso*, *En Revisión*, *Completado*.
+- Asignación de miembros y prioridades.
+
+### Módulo 3: Asistente RAG de Documentación
+- Subida de archivos técnicos (PDF, Markdown, `.txt`) vinculados a cada proyecto.
+- Chunking, generación de embeddings y almacenamiento vectorial en PostgreSQL (pgvector).
+- Chat interactivo contextual con citación exacta de fuentes y tasa cero de alucinación.
+
+### Módulo 4: Auditoría y Métricas
+- Registro de consumo de tokens por consulta/proyecto.
+- Historial de actividad y eventos del sistema.
+
+## 5. Criterios de Aceptación y Calidad (Quality Gates)
+- **Blindaje de Producción**: La rama `main` está bloqueada. Toda contribución entra exclusivamente mediante Pull Request (PR).
+- **Testing Mínimo Obligatorio**: Cobertura de pruebas unitarias/integración en flujos críticos (autenticación, Server Actions de DB y procesamiento de vectores RAG).
+- **CI/CD Automatizado**: Se ejecutan checks de Lint, Type-Check, Tests y Auditoría de Seguridad con `claude-code-security-review` en cada PR. Si algún check falla, el merge queda bloqueado.

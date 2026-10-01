@@ -26,6 +26,11 @@ enum TaskPriority {
   HIGH
 }
 
+enum ProjectStatus {
+  ACTIVE
+  ARCHIVED
+}
+
 model User {
   id        String   @id @default(cuid())
   clerkId   String   @unique
@@ -40,13 +45,14 @@ model User {
 }
 
 model Project {
-  id          String   @id @default(cuid())
+  id          String        @id @default(cuid())
   name        String
   description String?
+  status      ProjectStatus @default(ACTIVE)
   ownerId     String
-  owner       User     @relation("ProjectOwner", fields: [ownerId], references: [id], onDelete: Cascade)
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  owner       User          @relation("ProjectOwner", fields: [ownerId], references: [id], onDelete: Cascade)
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
 
   tasks     Task[]
   documents Document[]
