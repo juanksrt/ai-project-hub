@@ -107,8 +107,8 @@ erDiagram
 ai-project-hub/
 ├── AGENT.md            # Reglas del repositorio para agentes de IA
 ├── spec.md             # Requerimientos y arquitectura
-├── schema.prisma       # Esquema de la base de datos
 ├── prisma/
+│   ├── schema.prisma   # Esquema de la base de datos
 │   └── migrations/     # Migraciones versionadas
 ├── src/
 │   ├── app/            # Rutas, páginas y Server Actions
