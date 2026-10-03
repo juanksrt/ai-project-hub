@@ -51,6 +51,16 @@ ${contextText || 'No hay documentos subidos en este proyecto aún.'}`;
           message: err?.message,
           code: err?.code,
           meta: err?.meta,
+          _entorno: {
+            tieneDatabaseUrl: typeof process.env.DATABASE_URL,
+            longitudDatabaseUrl: process.env.DATABASE_URL?.length ?? 0,
+            prefijo: process.env.DATABASE_URL?.slice(0, 12),
+            vercelEnv: process.env.VERCEL_ENV,
+            esProduccion: process.env.NODE_ENV,
+            clavesQueEmpiezanPorData: Object.keys(process.env).filter((k) =>
+              k.toUpperCase().includes('DATABASE'),
+            ),
+          },
         },
       },
       { status: 500 },
