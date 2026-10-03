@@ -1,5 +1,6 @@
 import React from 'react';
 import { prisma } from '@/lib/prisma';
+import ChatSidebar from './ChatSidebar';
 
 // Mock data fallbacks for server component demo
 const MOCK_PROJECTS = [
@@ -182,42 +183,7 @@ export default async function DashboardPage() {
         </main>
 
         {/* Columna Derecha: Asistente RAG Integrado (1 col) */}
-        <aside className="p-5 rounded-xl bg-slate-900 border border-slate-800 flex flex-col h-[600px]">
-          <div className="flex items-center space-x-2 pb-4 border-b border-slate-800">
-            <span className="w-2.5 h-2.5 rounded-full bg-indigo-500 animate-pulse" />
-            <h2 className="font-semibold text-sm">Asistente RAG del Proyecto</h2>
-          </div>
-
-          {/* Ventana de Chat */}
-          <div className="flex-1 my-4 space-y-3 overflow-y-auto text-xs text-slate-300 pr-1">
-            <div className="bg-slate-800/60 p-3 rounded-lg">
-              <p className="font-semibold text-indigo-400 mb-1">IA Bot:</p>
-              Hola, soy el asistente de AI Project Hub. Puedo consultar los manuales y código del proyecto sin alucinar. ¿En qué puedo ayudarte?
-            </div>
-            <div className="bg-indigo-950/60 border border-indigo-900/50 p-3 rounded-lg ml-4">
-              <p className="font-semibold text-slate-300 mb-1">Tú:</p>
-              ¿Cómo está estructurado el esquema RAG en Prisma?
-            </div>
-            <div className="bg-slate-800/60 p-3 rounded-lg">
-              <p className="font-semibold text-indigo-400 mb-1">IA Bot:</p>
-              Según `schema.prisma`, los documentos se fragmentan en `DocumentChunk` y se conectan mediante la relación con `Document` y `Project`.
-            </div>
-          </div>
-
-          {/* Input del Chat */}
-          <div className="pt-2 border-t border-slate-800">
-            <div className="flex space-x-2">
-              <input
-                type="text"
-                placeholder="Pregunta a la IA sobre la doc..."
-                className="flex-1 bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-indigo-500"
-              />
-              <button className="bg-indigo-600 hover:bg-indigo-500 text-white px-3 py-2 rounded-lg text-xs font-medium transition">
-                Enviar
-              </button>
-            </div>
-          </div>
-        </aside>
+        <ChatSidebar />
       </div>
     </div>
   );
