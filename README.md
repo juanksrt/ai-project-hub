@@ -4,6 +4,8 @@ Plataforma centralizada para organizar proyectos de IA: tareas, documentos y una
 
 Construido con **Next.js (App Router)**, **TypeScript**, **Prisma** y **PostgreSQL**.
 
+> Nota: Rama `feature/test-ci` utilizada para verificar la auditoría automática de CI/CD en GitHub Actions.
+
 ---
 
 ## 🎯 Propósito
