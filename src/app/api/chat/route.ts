@@ -41,6 +41,19 @@ ${contextText || 'No hay documentos subidos en este proyecto aún.'}`;
     });
   } catch (error) {
     console.error('Error en RAG Chat API:', error);
-    return NextResponse.json({ error: 'Error interno en la API RAG' }, { status: 500 });
+    // TEMPORAL: diagnostico del 500 en produccion. Retirar tras identificar la causa.
+    const err = error as { name?: string; message?: string; code?: string; meta?: unknown };
+    return NextResponse.json(
+      {
+        error: 'Error interno en la API RAG',
+        _diagnostico: {
+          name: err?.name,
+          message: err?.message,
+          code: err?.code,
+          meta: err?.meta,
+        },
+      },
+      { status: 500 },
+    );
   }
 }
