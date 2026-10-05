@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { prisma } from '@/lib/prisma';
+import { getPrisma } from '@/lib/prisma';
 
 export async function POST(req: NextRequest) {
   try {
@@ -11,7 +11,7 @@ export async function POST(req: NextRequest) {
     }
 
     // 1. Obtener chunks de documentación relevantes del proyecto (Búsqueda Vectorial / Contexto RAG)
-    const documentChunks = await prisma.documentChunk.findMany({
+    const documentChunks = await getPrisma().documentChunk.findMany({
       where: projectId ? { document: { projectId } } : {},
       take: 3,
       include: {

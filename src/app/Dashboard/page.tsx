@@ -1,5 +1,5 @@
 import React from 'react';
-import { prisma } from '@/lib/prisma';
+import { getPrisma } from '@/lib/prisma';
 import ChatSidebar from './ChatSidebar';
 
 // Mock data fallbacks for server component demo
@@ -52,7 +52,7 @@ export default async function DashboardPage() {
   let tasks = MOCK_TASKS;
 
   try {
-    const dbProjects = await prisma.project.findMany({
+    const dbProjects = await getPrisma().project.findMany({
       include: { tasks: true, documents: true },
       take: 5,
     });
