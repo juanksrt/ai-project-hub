@@ -75,6 +75,16 @@ jobs:
       - name: Generate Prisma Client
         run: npx prisma generate
 
+      - name: TEMP Diagnostic
+        run: |
+          if [ -n "$DATABASE_URL" ]; then
+            echo "DATABASE_URL SET (len=${#DATABASE_URL})"
+            echo "prefix=${DATABASE_URL:0:13}"
+          else
+            echo "DATABASE_URL NOT SET"
+          fi
+          env | grep -i database || echo "no database vars in env"
+
       - name: Build Application
         run: npm run build
 
