@@ -537,3 +537,147 @@ de datos o recibe peticiones POST.
 | **Deprecación de runtime** | Node 20 en runners, Prisma 5 frente a Prisma 8 |
 
 ---
+
+---
+
+## 🔐 Fase 5 — Autenticación con NextAuth.js v5 (Auth.js)
+
+Rama `feature/auth-nextauth`. Implementa el **Módulo 1** de `spec.md` con
+NextAuth.js v5 + adaptador de Prisma sobre Neon.
+
+### 17. Modelos estándar de Auth.js en `schema.prisma`
+
+**Problema:** Auth.js exige cuatro entidades (`User`, `Account`, `Session`,
+`VerificationToken`) y el proyecto ya tenía un `User` propio con `clerkId`.
+
+**Solución:** se amplió `User` en lugar de duplicarlo — que es imposible en
+Prisma, que falla con *"There is already another model named User"*:
+
+| Campo | Cambio | Motivo |
+|---|---|---|
+| `clerkId` | `String` → `String?` | El adaptador crea usuarios sin Clerk |
+| `email` | `String` → `String?` | El estándar de Auth.js lo deja anulable |
+| `emailVerified`, `image` | nuevos | Exigidos por el adaptador |
+| `accounts[]`, `sessions[]` | nuevos | Relaciones con los modelos de sesión |
+| `passwordHash` | nuevo | Hash del proveedor Credentials (extensión propia) |
+
+Se añadieron `Account` (clave compuesta `@@id([provider, providerAccountId])`),
+`Session` (`sessionToken @unique`) y `VerificationToken`
+(`@@id([identifier, token])`), con los campos exactos del esquema oficial.
+
+**Impacto en los datos:** relajar `NOT NULL` no destruye nada. Tras
+`npx prisma db push`, la base de Neon quedó con las 3 tablas nuevas y los
+3 usuarios existentes intactos.
+
+### 18. El adaptador no puede resolverse al importar
+
+**Problema:** `NextAuth(config)` se ejecuta al importar la ruta API. Si el
+config trajera `PrismaAdapter(getPrisma())`, el build exigiría `DATABASE_URL`
+aunque nadie tocara la base — exactamente el fallo que ya había quebrado la CI
+(ver `fix/lazy-prisma-client`).
+
+**Solución:** `createLazyAdapter()` devuelve un `Proxy` que construye el
+adaptador real en el **primer método invocado**, es decir, en el primer request
+autentico:
+
+```typescript
+return new Proxy({} as Adapter, {
+  get(_target, property) {
+    const adapter = (instance ??= PrismaAdapter(getPrisma()));
+    const value = Reflect.get(adapter, property) as unknown;
+    return typeof value === 'function' ? value.bind(adapter) : value;
+  },
+});
+```
+
+**Verificado:** el build corre completo **sin `.env.local` ni `.env`**, igual
+que en GitHub Actions.
+
+### 19. Credentials con `node:crypto` (sin dependencias nuevas)
+
+`src/lib/credentials.ts` has y verifica passwords con **scrypt** (RFC 7914) en
+lugar de bcrypt/argon2: mismo nivel de garantía sin sumar paquetes nativos,
+algo que `AGENT.md` §5 prohibía sin confirmación previa.
+
+Formato `scrypt$cost$salt$hash`. `verifyPassword` **nunca lanza**: un hash
+corrupto o con un coste manipulado devuelve `false` en vez de consumir CPU o
+tumbar el login.
+
+**Aprendizaje:** separar `authorizeCredentials` y `parseCredentials` como
+funciones exportadas permitió probar el flujo de login en el entorno `node` de
+Vitest, sin necesitar base de datos ni renderizar React.
+
+### 20. Bug real detectado en la verificación E2E: bucle de redirecciones
+
+**Síntoma:** `GET /api/auth/signin` respondía `302 → 302 → 302` para siempre y
+nunca se veía el formulario.
+
+**Causa:** la configuración declaraba `pages: { signIn: '/api/auth/signin' }`.
+En `@auth/core/lib/pages/index.js`, `render.signin()` hace:
+
+```javascript
+if (pages?.signIn) return { redirect: `${pages.signIn}?callbackUrl=...` };
+// ...si no, renderiza el formulario
+```
+
+Es decir: **si defines `pages.signIn`, Auth.js redirige en lugar de renderizar**.
+Apuntarlo a la propia ruta crea un bucle infinito.
+
+**Solución:** eliminar la clave `pages`. Sin ella, Auth.js sirve su formulario
+por defecto en `/api/auth/signin` (ahora `200` con CSRF + campos email/password).
+
+**Aprendizaje:** los tests unitarios pasaban (la configuración *existía*, solo
+que era incorrecta). El bucle solo apareció al probar la ruta con `curl`. Esto
+es lo que aporta una verificación de extremo a extremo.
+
+### 21. Navegación con Login/Logout
+
+- `src/app/layout.tsx`: barra de navegación (`nav`) con marca, enlace al
+  Dashboard y `AuthButton`.
+- `src/app/Providers.tsx`: `SessionProvider` en un Client Component. El layout
+  sigue siendo un Server Component y **no** llama a `await auth()`, porque eso
+  obligaría a `AUTH_SECRET` durante `next build` y rompería el job de CI.
+- `src/components/features/AuthButton.tsx`: botón según `useSession()`, con la
+  lógica de presentación extraída a `src/lib/auth-action.ts` para poder testearla.
+- `src/types/next-auth.d.ts`: amplía `Session` con `user.id` y `user.role`.
+
+### 22. Verificaciones
+
+| Verificación | Resultado |
+|---|---|
+| `npx tsc --noEmit` | ✅ 0 errores |
+| `npm run lint` | ✅ 0 errores |
+| `npm test` | ✅ **52 tests** (7 archivos) |
+| `npm run build` (con `.env.local`) | ✅ `/api/auth/[...nextauth]` dinámica `ƒ` |
+| `npx next build` **sin variables de entorno** | ✅ 0 errores (simula CI) |
+| `npm audit --omit=dev --audit-level=high` | ✅ 0 vulnerabilidades |
+| `npx prisma validate` / `generate` / `db push` | ✅ Neon sincronizada |
+| E2E login correcto | ✅ sesión con `user.id` y `role: ADMIN` |
+| E2E password incorrecto / usuario inexistente | ✅ `session: null` |
+| E2E logout | ✅ `session: null` tras `POST /api/auth/signout` |
+| E2E formulario `/api/auth/signin` | ✅ `200` con email + password + CSRF |
+
+---
+
+## 📌 Pendientes tras la Fase 5
+
+| # | Tarea | Motivo |
+|---|---|---|
+| 1 | Registrar los modelos de Auth como migración (`prisma migrate dev`) | Se usó `db push` (lo pedido): la historia de migraciones quedó por detrás del esquema |
+| 2 | Proveedores OAuth (GitHub/Google) | Requiere crear la app OAuth y definir `AUTH_GITHUB_*` |
+| 3 | Página de login propia (`/login`) | Hoy se usa el formulario por defecto de Auth.js |
+| 4 | **Autorización en `/api/chat`** | Crítico: sigue sin comprobar quién pregunta |
+| 5 | Password reset / verificación de email | Auth.js lo soporta con `EmailProvider` y `VerificationToken` |
+
+---
+
+## 🔑 Conceptos introducidos en esta fase
+
+| Concepto | Dónde apareció |
+|---|---|
+| **Adapter de Auth.js** | `PrismaAdapter` sobre los 4 modelos estándar |
+| **Inicialización perezosa con Proxy** | `createLazyAdapter()` protege el build de CI |
+| **Estrategia JWT vs database** | Credentials exige JWT; el adaptador persiste usuarios |
+| **scrypt** | `src/lib/credentials.ts`, sin dependencias nativas nuevas |
+| **Module augmentation** | `src/types/next-auth.d.ts` tipa `session.user` |
+| **Verificación E2E** | El bucle de `pages.signIn` no lo detectaba ningún test unitario |
