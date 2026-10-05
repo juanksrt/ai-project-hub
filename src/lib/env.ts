@@ -9,11 +9,43 @@
 /** Patron que debe cumplir una connection string de PostgreSQL. */
 const POSTGRES_URL = /^postgres(ql)?:\/\//;
 
+/** Longitud minima exigida por NextAuth.js para firmar tokens de sesion. */
+export const AUTH_SECRET_MIN_LENGTH = 32;
+
 export class EnvironmentError extends Error {
   constructor(message: string) {
     super(message);
     this.name = 'EnvironmentError';
   }
+}
+
+/**
+ * Valida que AUTH_SECRET exista y tenga longitud suficiente.
+ *
+ * @param secret - Valor crudo de la variable. Si se omite, lee `process.env`.
+ * @returns El secreto validado.
+ * @throws {EnvironmentError} Si falta o es mas corto de 32 caracteres.
+ *
+ * @remarks No se imprime el valor en el error porque es un secreto.
+ */
+export function assertAuthSecret(secret: string | undefined = process.env.AUTH_SECRET): string {
+  if (!secret || secret.trim() === '') {
+    throw new EnvironmentError(
+      'AUTH_SECRET no esta definida. Generala con ' +
+        '"openssl rand -base64 32" y guardala en .env.local (desarrollo) y en ' +
+        'las variables de entorno del proveedor de despliegue (produccion).',
+    );
+  }
+
+  if (secret.trim().length < AUTH_SECRET_MIN_LENGTH) {
+    throw new EnvironmentError(
+      `AUTH_SECRET invalida: deben ser al menos ${AUTH_SECRET_MIN_LENGTH} caracteres ` +
+        `(hay ${secret.trim().length}). NextAuth.js rechaza secretos mas cortos porque ` +
+        'se usan para firmar los tokens de sesion.',
+    );
+  }
+
+  return secret;
 }
 
 /**

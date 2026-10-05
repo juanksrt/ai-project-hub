@@ -32,16 +32,63 @@ enum ProjectStatus {
 }
 
 model User {
-  id        String   @id @default(cuid())
-  clerkId   String   @unique
-  email     String   @unique
-  name      String?
-  role      Role     @default(MEMBER)
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id            String    @id @default(cuid())
+  // `clerkId` y `email` son opcionales porque el adaptador de Auth.js crea
+  // usuarios sin esos datos (proveedores OAuth sin email, migracion desde
+  // Clerk, etc.). `db push` relaja la restriccion NOT NULL, no borra datos.
+  clerkId       String?   @unique
+  email         String?   @unique
+  emailVerified DateTime?
+  image         String?
+  name          String?
+  // Hash scrypt del password para el proveedor Credentials (ver
+  // src/lib/credentials.ts). No forma parte del esquema estandar de Auth.js:
+  // es una extension de este proyecto.
+  passwordHash  String?
+  role          Role      @default(MEMBER)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  accounts Account[]
+  sessions Session[]
 
   ownedProjects Project[] @relation("ProjectOwner")
   tasks         Task[]    @relation("TaskAssignee")
+}
+
+// --- Modelos estandar de NextAuth.js / Auth.js con adaptador Prisma ---------
+// https://authjs.dev/getting-started/adapters/prisma
+
+model Account {
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String? @db.Text
+  access_token      String? @db.Text
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String? @db.Text
+  session_state     String?
+  user              User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([provider, providerAccountId])
+}
+
+model Session {
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@id([identifier, token])
 }
 
 model Project {

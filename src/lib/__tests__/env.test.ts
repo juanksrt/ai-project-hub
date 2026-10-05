@@ -1,6 +1,40 @@
 import { describe, expect, it } from 'vitest';
 
-import { EnvironmentError, assertDatabaseUrl } from '@/lib/env';
+import { EnvironmentError, assertAuthSecret, assertDatabaseUrl } from '@/lib/env';
+
+describe('assertAuthSecret', () => {
+  it('acepta un secreto de 32 caracteres o más', () => {
+    const secreto = 'a'.repeat(32);
+    expect(assertAuthSecret(secreto)).toBe(secreto);
+    expect(assertAuthSecret('a'.repeat(64))).toHaveLength(64);
+  });
+
+  it('rechaza undefined con un mensaje que nombra la variable', () => {
+    expect(() => assertAuthSecret(undefined)).toThrow(EnvironmentError);
+    expect(() => assertAuthSecret(undefined)).toThrow(/AUTH_SECRET no esta definida/);
+  });
+
+  it('rechaza una cadena vacía', () => {
+    expect(() => assertAuthSecret('')).toThrow(/no esta definida/);
+    expect(() => assertAuthSecret('   ')).toThrow(/no esta definida/);
+  });
+
+  it('rechaza secretos más cortos que el mínimo de NextAuth', () => {
+    expect(() => assertAuthSecret('secreto-corto')).toThrow(/al menos 32 caracteres/);
+    expect(() => assertAuthSecret('a'.repeat(31))).toThrow(/AUTH_SECRET invalida/);
+  });
+
+  it('nunca imprime el valor del secreto en el error', () => {
+    const secreto = 'SECRETO-QUE-NO-DEBE-FILTRARSE';
+    try {
+      assertAuthSecret(secreto);
+      expect.unreachable('debio lanzar EnvironmentError');
+    } catch (error) {
+      expect(error).toBeInstanceOf(EnvironmentError);
+      expect(String((error as Error).message)).not.toContain(secreto);
+    }
+  });
+});
 
 describe('assertDatabaseUrl', () => {
   it('acepta una URL de PostgreSQL valida', () => {

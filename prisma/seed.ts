@@ -1,8 +1,20 @@
 import { PrismaClient, Role, TaskStatus, TaskPriority, ProjectStatus } from '@prisma/client';
 
+import { hashPassword } from '../src/lib/credentials';
+
 const prisma = new PrismaClient();
 
+/**
+ * Password de los usuarios de prueba.
+ *
+ * SOLO sirve para desarrollo: el seed limpia la base entera, asi que nunca se
+ * ejecuta contra produccion. Se puede sobreescribir con SEED_USER_PASSWORD.
+ */
+const SEED_PASSWORD = process.env.SEED_USER_PASSWORD ?? 'Admin1234!';
+
 async function main(): Promise<void> {
+  const passwordHash = await hashPassword(SEED_PASSWORD);
+
   // Limpiar tablas en orden seguro para relaciones
   await prisma.documentChunk.deleteMany();
   await prisma.document.deleteMany();
@@ -17,6 +29,7 @@ async function main(): Promise<void> {
       email: 'admin@aiprojecthub.dev',
       name: 'Juan Admin',
       role: Role.ADMIN,
+      passwordHash,
     },
   });
 
@@ -26,6 +39,7 @@ async function main(): Promise<void> {
       email: 'maria@aiprojecthub.dev',
       name: 'María López',
       role: Role.MEMBER,
+      passwordHash,
     },
   });
 
@@ -35,6 +49,7 @@ async function main(): Promise<void> {
       email: 'carlos@aiprojecthub.dev',
       name: 'Carlos Ruiz',
       role: Role.MEMBER,
+      passwordHash,
     },
   });
 

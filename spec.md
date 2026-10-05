@@ -19,6 +19,23 @@ Plataforma web SaaS de gestión de proyectos y tareas con un **asistente RAG int
 - Registro e inicio de sesión seguro (Email, OAuth GitHub/Google).
 - Control de roles (Administrador, Desarrollador, Cliente).
 
+**Implementación (rama `feature/auth-nextauth`):**
+- **NextAuth.js v5 (Auth.js)** con `@auth/prisma-adapter` sobre la base de Neon.
+- Modelos estándar en `prisma/schema.prisma`: `User` (ampliado con `emailVerified`,
+  `image`, `accounts`, `sessions`, `passwordHash`), `Account`, `Session` y
+  `VerificationToken`.
+- Proveedor **Credentials** (email + password) con hash `scrypt` de `node:crypto`
+  (`src/lib/credentials.ts`); la sesión se guarda en JWT (`strategy: "jwt"`).
+  Los proveedores OAuth se añaden a `src/lib/auth-config.ts` cuando existan
+  credenciales (`AUTH_GITHUB_ID` / `AUTH_GITHUB_SECRET`).
+- Puntos de entrada: `src/auth.ts` (configuración y `auth()`), la ruta
+  `src/app/api/auth/[...nextauth]/route.ts` y el botón Login/Logout de la
+  navegación (`src/components/features/AuthButton.tsx`).
+- Variables requeridas: `AUTH_SECRET` (mínimo 32 caracteres) y, fuera de
+  Vercel/Vercel-like, `AUTH_TRUST_HOST=true`.
+- El rol (`ADMIN` / `MEMBER`) se propaga al cliente en `session.user.role` sin
+  consultar la base de datos en cada request.
+
 ### Módulo 2: Dashboard de Proyectos y Tareas
 - CRUD completo de Proyectos y Tableros Kanban/Listas.
 - Estados de tareas: *Pendiente*, *En Proceso*, *En Revisión*, *Completado*.
