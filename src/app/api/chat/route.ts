@@ -41,29 +41,6 @@ ${contextText || 'No hay documentos subidos en este proyecto aún.'}`;
     });
   } catch (error) {
     console.error('Error en RAG Chat API:', error);
-    // TEMPORAL: diagnostico del 500 en produccion. Retirar tras identificar la causa.
-    const err = error as { name?: string; message?: string; code?: string; meta?: unknown };
-    return NextResponse.json(
-      {
-        error: 'Error interno en la API RAG',
-        _diagnostico: {
-          name: err?.name,
-          message: err?.message,
-          code: err?.code,
-          meta: err?.meta,
-          _entorno: {
-            tieneDatabaseUrl: typeof process.env.DATABASE_URL,
-            longitudDatabaseUrl: process.env.DATABASE_URL?.length ?? 0,
-            prefijo: process.env.DATABASE_URL?.slice(0, 12),
-            vercelEnv: process.env.VERCEL_ENV,
-            esProduccion: process.env.NODE_ENV,
-            clavesQueEmpiezanPorData: Object.keys(process.env).filter((k) =>
-              k.toUpperCase().includes('DATABASE'),
-            ),
-          },
-        },
-      },
-      { status: 500 },
-    );
+    return NextResponse.json({ error: 'Error interno en la API RAG' }, { status: 500 });
   }
 }
