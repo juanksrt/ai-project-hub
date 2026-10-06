@@ -1,5 +1,6 @@
 import React from 'react';
 import { getPrisma } from '@/lib/prisma';
+import CreateTaskForm from '@/components/features/CreateTaskForm';
 import ChatSidebar from './ChatSidebar';
 
 // Mock data fallbacks for server component demo
@@ -47,12 +48,13 @@ const MOCK_TASKS = [
 ];
 
 export default async function DashboardPage() {
-  // Intentar cargar proyectos reales de la DB si existen
+  // Intentar cargar proyectos y tareas reales de la DB si existen
   let projects = MOCK_PROJECTS;
   let tasks = MOCK_TASKS;
 
   try {
-    const dbProjects = await getPrisma().project.findMany({
+    const prisma = getPrisma();
+    const dbProjects = await prisma.project.findMany({
       include: { tasks: true, documents: true },
       take: 5,
     });
@@ -64,6 +66,22 @@ export default async function DashboardPage() {
         status: p.status,
         taskCount: p.tasks.length,
         docCount: p.documents.length,
+      }));
+    }
+
+    // Ultimas tareas: incluye la creada desde el formulario del Dashboard.
+    const dbTasks = await prisma.task.findMany({
+      orderBy: { createdAt: 'desc' },
+      take: 8,
+      include: { project: { select: { name: true } } },
+    });
+    if (dbTasks.length > 0) {
+      tasks = dbTasks.map((t) => ({
+        id: t.id,
+        title: t.title,
+        status: t.status,
+        priority: t.priority,
+        projectName: t.project.name,
       }));
     }
   } catch (error) {
@@ -145,7 +163,10 @@ export default async function DashboardPage() {
 
           {/* Lista de Tareas */}
           <div className="p-5 rounded-xl bg-slate-900 border border-slate-800">
-            <h2 className="text-lg font-semibold mb-4">Tareas Prioritarias</h2>
+            <div className="flex justify-between items-center mb-4">
+              <h2 className="text-lg font-semibold">Tareas Prioritarias</h2>
+              <CreateTaskForm projects={projects.map(({ id, name }) => ({ id, name }))} />
+            </div>
             <div className="space-y-3">
               {tasks.map((task) => (
                 <div

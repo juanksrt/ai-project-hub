@@ -41,6 +41,18 @@ Plataforma web SaaS de gestión de proyectos y tareas con un **asistente RAG int
 - Estados de tareas: *Pendiente*, *En Proceso*, *En Revisión*, *Completado*.
 - Asignación de miembros y prioridades.
 
+**Implementación (rama `feature/create-task-form`): creación de tareas:**
+- Endpoint **`POST /api/tasks`** (`src/app/api/tasks/route.ts`), validado con
+  **Zod** (`src/lib/task-schema.ts`): `title` (1–120), `description` opcional
+  (≤2000, vacío normalizado a `null`), `status` (`PENDING` / `IN_PROGRESS` /
+  `COMPLETED`), `priority` (`LOW` / `MEDIUM` / `HIGH`) y `projectId`.
+- Asignación automática al usuario de la sesión: `assigneeId = session.user.id`
+  obtenido con `auth()` de NextAuth; el valor enviado por el cliente se ignora.
+- Códigos de respuesta: `401` sin sesión, `400` con `fieldErrors` por campo,
+  `404` si el proyecto no existe y `500` ante fallo de base de datos.
+- UI: modal con Tailwind en `src/components/features/CreateTaskForm.tsx`
+  (botón *+ Nueva Tarea* en «Tareas Prioritarias» del Dashboard).
+
 ### Módulo 3: Asistente RAG de Documentación
 - Subida de archivos técnicos (PDF, Markdown, `.txt`) vinculados a cada proyecto.
 - Chunking, generación de embeddings y almacenamiento vectorial en PostgreSQL (pgvector).
