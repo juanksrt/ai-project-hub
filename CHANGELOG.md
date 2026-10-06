@@ -666,7 +666,7 @@ es lo que aporta una verificación de extremo a extremo.
 | 1 | Registrar los modelos de Auth como migración (`prisma migrate dev`) | Se usó `db push` (lo pedido): la historia de migraciones quedó por detrás del esquema |
 | 2 | Proveedores OAuth (GitHub/Google) | Requiere crear la app OAuth y definir `AUTH_GITHUB_*` |
 | 3 | Página de login propia (`/login`) | Hoy se usa el formulario por defecto de Auth.js |
-| 4 | **Autorización en `/api/chat`** | Crítico: sigue sin comprobar quién pregunta |
+| 4 | **Autorización en `/api/chat`** | ~~Crítico: sigue sin comprobar quién pregunta~~ ✅ cerrado en la Fase 6 (`auth()` → `401` sin sesión) |
 | 5 | Password reset / verificación de email | Auth.js lo soporta con `EmailProvider` y `VerificationToken` |
 
 ---
@@ -681,3 +681,116 @@ es lo que aporta una verificación de extremo a extremo.
 | **scrypt** | `src/lib/credentials.ts`, sin dependencias nativas nuevas |
 | **Module augmentation** | `src/types/next-auth.d.ts` tipa `session.user` |
 | **Verificación E2E** | El bucle de `pages.signIn` no lo detectaba ningún test unitario |
+
+---
+
+## 🟣 Fase 6 — Asistente RAG con pgvector (embeddings vectoriales)
+
+**Contexto:** `POST /api/chat` "recuperaba" contexto con `documentChunk.findMany({ take: 3 })`,
+es decir: los tres primeros fragmentos **al azar**, sin orden por relevancia, y los proyectos
+y tareas no estaban indexados en ningún sitio. El chat no era RAG, era un volcado de tablas.
+
+### 1. pgvector y la migración
+
+**Solución:**
+
+- `CREATE EXTENSION IF NOT EXISTS vector;` en la nueva migración
+  `20261005212314_add_pgvector_embeddings` (pgvector **0.8.6** y PostgreSQL 18.6 en Neon).
+- Índice **HNSW** sobre `"embedding" vector_cosine_ops`: la búsqueda por similitud
+  coseno (`<=>`) no escanea la tabla.
+
+**Problemas encontrados y cómo se resolvieron:**
+
+| Problema | Causa | Solución |
+|---|---|---|
+| `P3006: syntax error at or near "﻿"` | La migración `init` tenía un **BOM UTF-8** al inicio | Se reescribió el archivo sin BOM (contenido idéntico) |
+| `migrate dev` exige TTY interactivo | Shell no interactiva | `prisma migrate diff --from-schema-datamodel old --to-schema-datamodel new --script` y `prisma migrate deploy` |
+
+### 2. Modelo `Embedding` con `Unsupported("vector(1536)")`
+
+Prisma 5 **no tiene tipo `vector` nativo**, así que la columna se declara como tipo
+nativo no soportado. Consecuencia: Prisma Client **nunca** toca esa columna y todo
+acceso al vector pasa por SQL crudo **parametrizado** (`$1`, `$2`, ...), sin inyección SQL.
+
+- `@@unique([entityType, entityId])` → el upsert es `ON CONFLICT`, re-indexar no duplica.
+- `projectId` denormalizado → el filtro por proyecto usa índice en la búsqueda coseno.
+- `title` → el texto que se cita en la respuesta del asistente.
+
+### 3. `src/lib/embeddings.ts`
+
+| Función | Qué hace |
+|---|---|
+| `generateEmbedding(texto)` | Vercel AI SDK (`embed`) + `text-embedding-3-small` (1536) |
+| `upsertEmbedding(...)` | Serializa `[0.1,0.2,...]` y persiste con `ON CONFLICT` |
+| `indexProject()` / `indexTask()` | **Nunca lanzan**: devuelven `false` si falla la IA |
+| `similaritySearch()` | `<=>` (coseno), score `1 - distancia` recortado a [0,1] |
+| `lexicalSearch()` | Respaldo `ILIKE` cuando no hay `OPENAI_API_KEY` |
+| `deleteProjectEmbeddings()` | Limpieza de los vectores de un proyecto |
+
+**Clave de diseño:** crear o actualizar una tarea **nunca** puede fallar por un problema
+del proveedor de IA; la indexación se intenta y se informa con `indexed: boolean`.
+
+### 4. Indexación en la escritura
+
+- `POST /api/tasks` → `indexTask()` tras el `create` (responde `indexed`).
+- `POST /api/projects` (nuevo) → crea el proyecto y lo indexa.
+- `PATCH /api/projects/[id]` (nuevo) → actualiza y **re-indexa** (mismo `entityId`,
+  el vector anterior se sobrescribe). Autoriza solo al propietario o a un `ADMIN` (403).
+
+### 5. `POST /api/chat` con búsqueda coseno
+
+1. **`auth()` de NextAuth → `401` sin sesión.** El chat devuelve contenido de
+   proyectos y tareas, así que no puede ser público: se cierra aquí el punto 4
+   de los pendientes de la Fase 5.
+2. Validación con `chatRequestSchema` (Zod) → `400` si no cumple.
+3. La última pregunta se embede y se busca por **coseno** en `Embedding`
+   (con respaldo léxico si falta la credencial). Otro fallo de BD → `500`.
+4. Los `DocumentChunk` del proyecto se anaden al contexto junto a los hits vectoriales.
+5. `streamText` (`gpt-4o-mini`) redacta la respuesta con el *Guardrail of Truth*
+   (contexto anclado + citación `[Fuente: ...]` + "si no está en el contexto, dilo").
+6. La respuesta sale como **stream de texto plano** y las fuentes viajan en cabeceras
+   (`X-RAG-Sources`, `X-RAG-Mode`, `X-RAG-Retrieval`): se envían **antes** de que
+   empiece el streaming, que es exactamente lo que necesita el cliente.
+
+**Sin `OPENAI_API_KEY` el chat no falla:** responde en modo `context` con el material
+recuperado y las mismas cabeceras. Útil en local y en CI.
+
+### 6. UI del chat (`ChatSidebar`)
+
+- Lee el stream con `response.body.getReader()` y `TextDecoder` → respuesta **en tiempo real**.
+- Estados separados: *Buscando fuentes en PostgreSQL* (hasta el primer chunk) y
+  *Escribiendo* (durante el stream).
+- Estado de error con botón **Reintentar** que reenvía el historial hasta el último usuario.
+- Fuentes citadas como chips con su **score en %** y aviso cuando la respuesta es de tipo `context`.
+
+### 7. Verificaciones
+
+| Verificación | Resultado |
+|---|---|
+| `npx tsc --noEmit` | ✅ 0 errores |
+| `npm run lint` | ✅ 0 errores |
+| `npm test` | ✅ **125 tests** (13 archivos), 49 nuevos (3 son E2E y se saltan sin `DATABASE_URL`) |
+| `npx prisma migrate deploy` | ✅ Neon sincronizada (tabla + HNSW) |
+| E2E `embeddings-e2e.test.ts` | ✅ insert → re-index sin duplicar → coseno `1 - 0 = 1` → `ILIKE` → `DELETE` |
+| `npm audit --omit=dev --audit-level=high` | ⚠️ 9 vulnerabilidades previas (dependencias ya existentes) |
+
+### 📌 Pendientes tras la Fase 6
+
+| # | Tarea | Motivo |
+|---|---|---|
+| 1 | Embeddings de `DocumentChunk` | El chunking existe, pero sus vectores no se generan: hoy la recuperación de documentos es léxica |
+| 2 | Re-indexación en lote (`reindexProject`) | Migrar datos existentes sin re-crear cada proyecto/tarea |
+| 3 | Botón *+ Nuevo Proyecto* del Dashboard | Ahora tiene `POST /api/projects`, pero el botón sigue sin formulario |
+| 4 | Scoping de resultados por usuario | Hoy el chat exige sesión, pero un usuario autenticado ve todos los proyectos indexados |
+
+### 🔑 Conceptos introducidos en esta fase
+
+| Concepto | Dónde aparece |
+|---|---|
+| **pgvector / distancia coseno (`<=>`)** | Migración + `similaritySearch()` |
+| **Índice HNSW** | `migration.sql` de la Fase 6 |
+| **`Unsupported<T>` en Prisma** | `model Embedding` (SQL crudo parametrizado) |
+| **Upsert con `ON CONFLICT`** | `upsertEmbedding()` |
+| **Vercel AI SDK (`embed` / `streamText`)** | `src/lib/embeddings.ts` y `/api/chat` |
+| **Respuesta en streaming + metadatos en cabeceras** | `createTextStreamResponse()` + `X-RAG-*` |
+| **Modo degradado sin API key** | `lexicalSearch()` + `X-RAG-Mode: context` |

@@ -58,6 +58,44 @@ Plataforma web SaaS de gestión de proyectos y tareas con un **asistente RAG int
 - Chunking, generación de embeddings y almacenamiento vectorial en PostgreSQL (pgvector).
 - Chat interactivo contextual con citación exacta de fuentes y tasa cero de alucinación.
 
+**Implementación (rama `feature/rag-pgvector`): embeddings de Project y Task:**
+- Extensión **pgvector** habilitada en la migración
+  `prisma/migrations/20261005212314_add_pgvector_embeddings` (`CREATE EXTENSION
+  IF NOT EXISTS vector`, pgvector 0.8.6 en Neon) e índice **HNSW**
+  (`vector_cosine_ops`) para la búsqueda por similitud coseno (`<=>`).
+- Modelo **`Embedding`** en `prisma/schema.prisma`: `entityType`
+  (`PROJECT`/`TASK`), `entityId`, `projectId` (filtro), `title` (cita),
+  `content` y `embedding Unsupported("vector(1536)")`. Prisma 5 no expone el
+  tipo `vector`, así que la columna se lee/escribe **solo con SQL crudo
+  parametrizado** (`$queryRaw` / `$executeRaw`); el upsert es
+  `ON CONFLICT ("entityType","entityId")` (re-indexar no duplica).
+- **`src/lib/embeddings.ts`**: `generateEmbedding()` (Vercel AI SDK +
+  `text-embedding-3-small`, 1536 dimensiones), `indexProject()` / `indexTask()`
+  (nunca lanzan: devuelven `false` si falla el proveedor), `similaritySearch()`
+  (coseno, score `1 - distancia` recortado a [0,1]), `lexicalSearch()`
+  (respaldo `ILIKE` sin credencial) y `deleteProjectEmbeddings()`.
+- **Indexación en escritura**: `POST /api/tasks`, `POST /api/projects` y
+  `PATCH /api/projects/[id]` generan el embedding al crear/actualizar y
+  responden `indexed: boolean`.
+- **`POST /api/chat`**: exige sesión (`auth()` → `401` sin sesión), valida con
+  `chatRequestSchema` (Zod), embede la última pregunta, busca por coseno (con
+  respaldo léxico si falta `OPENAI_API_KEY`), anade los `DocumentChunk` del
+  proyecto al contexto y redacta la respuesta con `streamText` (`gpt-4o-mini`)
+  devolviendo un **stream de texto plano**. Las fuentes van en las cabeceras
+  `X-RAG-Sources` (JSON con `encodeURIComponent`), `X-RAG-Mode` (`llm`/`context`)
+  y `X-RAG-Retrieval` (`vector`/`lexical`).
+- **UI**: `src/app/Dashboard/ChatSidebar.tsx` (ya montado en el Dashboard) lee
+  el stream con `response.body.getReader()` y muestra estados de carga,
+  de escritura, error con *Reintentar* y las fuentes citadas con su score.
+- **Variables**: `OPENAI_API_KEY` es opcional: sin ella el chat responde en
+  modo `context` (contexto recuperado + fuentes) en vez de fallar.
+- **Tests**: `src/lib/__tests__/embeddings.test.ts` (24),
+  `src/app/api/chat/__tests__/chat-route.test.ts` (10),
+  `src/app/api/projects/__tests__/projects-route.test.ts` (12) y
+  `src/lib/__tests__/embeddings-e2e.test.ts` (3, integración con Neon: se
+  ejecutan solo si existe `DATABASE_URL` y validan el cast a `vector`, el
+  `ON CONFLICT` y el operador coseno contra la base de datos real).
+
 ### Módulo 4: Auditoría y Métricas
 - Registro de consumo de tokens por consulta/proyecto.
 - Historial de actividad y eventos del sistema.
