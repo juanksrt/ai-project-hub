@@ -2,17 +2,22 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Los dobles se declaran con vi.hoisted para que esten disponibles dentro de
 // los factories de vi.mock, que Vitest eleva por encima de los imports.
-const { authMock, indexProjectMock, createMock, findUniqueMock, updateMock } = vi.hoisted(() => ({
-  authMock: vi.fn(),
-  indexProjectMock: vi.fn(),
-  createMock: vi.fn(),
-  findUniqueMock: vi.fn(),
-  updateMock: vi.fn(),
-}));
+const { authMock, indexProjectMock, reindexProjectMock, createMock, findUniqueMock, updateMock } =
+  vi.hoisted(() => ({
+    authMock: vi.fn(),
+    indexProjectMock: vi.fn(),
+    reindexProjectMock: vi.fn(),
+    createMock: vi.fn(),
+    findUniqueMock: vi.fn(),
+    updateMock: vi.fn(),
+  }));
 
 vi.mock('@/auth', () => ({ auth: authMock }));
 
-vi.mock('@/lib/embeddings', () => ({ indexProject: indexProjectMock }));
+vi.mock('@/lib/embeddings', () => ({
+  indexProject: indexProjectMock,
+  reindexProject: reindexProjectMock,
+}));
 
 vi.mock('@/lib/prisma', () => ({
   getPrisma: () => ({
@@ -22,11 +27,19 @@ vi.mock('@/lib/prisma', () => ({
 
 import { POST } from '@/app/api/projects/route';
 import { PATCH } from '@/app/api/projects/[id]/route';
+import { POST as REINDEX_POST } from '@/app/api/projects/[id]/reindex/route';
 
 /** Cuerpo de respuesta de los endpoints de proyectos. */
 interface ProjectRouteResponse {
   project?: { id: string; name: string; description: string | null; ownerId: string };
   indexed?: boolean;
+  result?: {
+    projectId: string;
+    project: boolean;
+    tasksTotal: number;
+    tasksIndexed: number;
+    orphansRemoved: number;
+  };
   error?: string;
 }
 
@@ -57,6 +70,14 @@ function makePatchRequest(id: string, body: unknown): [Request, { params: Promis
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     }),
+    { params: Promise.resolve({ id }) },
+  ];
+}
+
+/** El re-indexado no recibe cuerpo: solo importa el `id` de la ruta. */
+function makeReindexRequest(id: string): [Request, { params: Promise<{ id: string }> }] {
+  return [
+    new Request(`http://localhost:3000/api/projects/${id}/reindex`, { method: 'POST' }),
     { params: Promise.resolve({ id }) },
   ];
 }
@@ -258,5 +279,108 @@ describe('PATCH /api/projects/[id]', () => {
     expect(response.status).toBe(400);
     expect(body.error).toBe('Datos del proyecto invalidos');
     expect(updateMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('POST /api/projects/[id]/reindex', () => {
+  let consoleErrorSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    authMock.mockResolvedValue({ user: { id: SESSION_USER_ID, role: 'MEMBER' } });
+    findUniqueMock.mockResolvedValue({ id: PROJECT_ID, ownerId: SESSION_USER_ID });
+    reindexProjectMock.mockResolvedValue({
+      projectId: PROJECT_ID,
+      project: true,
+      tasksTotal: 4,
+      tasksIndexed: 4,
+      orphansRemoved: 0,
+    });
+  });
+
+  afterEach(() => {
+    consoleErrorSpy.mockRestore();
+  });
+
+  it('responde 401 si no hay sesion activa', async () => {
+    authMock.mockResolvedValue(null);
+
+    const [request, context] = makeReindexRequest(PROJECT_ID);
+    const response = await REINDEX_POST(request, context);
+    const body = (await response.json()) as ProjectRouteResponse;
+
+    expect(response.status).toBe(401);
+    expect(findUniqueMock).not.toHaveBeenCalled();
+    expect(reindexProjectMock).not.toHaveBeenCalled();
+  });
+
+  it('responde 404 si el proyecto no existe', async () => {
+    findUniqueMock.mockResolvedValue(null);
+
+    const [request, context] = makeReindexRequest('no-existe');
+    const response = await REINDEX_POST(request, context);
+    const body = (await response.json()) as ProjectRouteResponse;
+
+    expect(response.status).toBe(404);
+    expect(body.error).toBe('Proyecto no encontrado');
+    expect(reindexProjectMock).not.toHaveBeenCalled();
+  });
+
+  it('responde 403 si el proyecto es de otro usuario', async () => {
+    findUniqueMock.mockResolvedValue({ id: PROJECT_ID, ownerId: 'otro-usuario' });
+
+    const [request, context] = makeReindexRequest(PROJECT_ID);
+    const response = await REINDEX_POST(request, context);
+    const body = (await response.json()) as ProjectRouteResponse;
+
+    expect(response.status).toBe(403);
+    expect(body.error).toBe('No tienes permiso para re-indexar este proyecto');
+    expect(reindexProjectMock).not.toHaveBeenCalled();
+  });
+
+  it('permite a un ADMIN re-indexar un proyecto ajeno', async () => {
+    authMock.mockResolvedValue({ user: { id: SESSION_USER_ID, role: 'ADMIN' } });
+    findUniqueMock.mockResolvedValue({ id: PROJECT_ID, ownerId: 'otro-usuario' });
+
+    const [request, context] = makeReindexRequest(PROJECT_ID);
+    const response = await REINDEX_POST(request, context);
+
+    expect(response.status).toBe(200);
+    expect(reindexProjectMock).toHaveBeenCalledWith(PROJECT_ID);
+  });
+
+  it('re-indexa el proyecto y devuelve los contadores', async () => {
+    const [request, context] = makeReindexRequest(PROJECT_ID);
+    const response = await REINDEX_POST(request, context);
+    const body = (await response.json()) as ProjectRouteResponse;
+
+    expect(response.status).toBe(200);
+    expect(body.result).toEqual({
+      projectId: PROJECT_ID,
+      project: true,
+      tasksTotal: 4,
+      tasksIndexed: 4,
+      orphansRemoved: 0,
+    });
+    // La autorizacion se decide sobre el dueño del proyecto.
+    expect(findUniqueMock).toHaveBeenCalledWith({
+      where: { id: PROJECT_ID },
+      select: { id: true, ownerId: true },
+    });
+    expect(reindexProjectMock).toHaveBeenCalledWith(PROJECT_ID);
+  });
+
+  it('responde 500 si el re-indexado falla', async () => {
+    reindexProjectMock.mockRejectedValue(new Error('rate limit'));
+
+    const [request, context] = makeReindexRequest(PROJECT_ID);
+    const response = await REINDEX_POST(request, context);
+    const body = (await response.json()) as ProjectRouteResponse;
+
+    expect(response.status).toBe(500);
+    expect(body.error).toBe('Error interno al re-indexar el proyecto');
+    expect(consoleErrorSpy).toHaveBeenCalled();
   });
 });
