@@ -122,6 +122,20 @@ export interface SearchOptions {
   topK?: number;
 }
 
+/** Contador devuelto por `reindexProject` al terminar. */
+export interface ReindexResult {
+  /** Proyecto re-indexado. */
+  projectId: string;
+  /** `true` si el embedding del proyecto se guardo. */
+  project: boolean;
+  /** Numero de tareas que tiene el proyecto. */
+  tasksTotal: number;
+  /** Tareas cuyo embedding se guardo. */
+  tasksIndexed: number;
+  /** Vectores de tareas/proyectos borrados que se limpiaron al pasar. */
+  orphansRemoved: number;
+}
+
 /**
  * Error lanzado cuando falta la credencial del proveedor de IA.
  *
@@ -388,6 +402,73 @@ export async function indexTask(task: TaskForIndexing): Promise<boolean> {
 }
 
 /**
+ * Re-indexa un proyecto entero (proyecto + todas sus tareas).
+ *
+ * Es la operacion de mantenimiento que faltaba para migrar de proveedor de IA
+ * sin tocar cada entidad a mano: primero limpia los vectores que apuntan a
+ * entidades que ya no existen y despues vuelve a generar todos los embeddings
+ * con el modelo actual. El upsert `ON CONFLICT` sobrescribe el vector
+ * anterior, asi que la operacion es **idempotente** y no duplica filas.
+ *
+ * A diferencia de `indexEntity`, los fallos del proveedor no se ocultan: se
+ * devuelven contadores para que quien llama pueda reportar que algo fallo.
+ *
+ * @param projectId - Id del proyecto a re-indexar.
+ * @returns Contadores de lo que se hizo.
+ * @throws {Error} Si el proyecto no existe o la lectura de la base de datos falla.
+ */
+export async function reindexProject(projectId: string): Promise<ReindexResult> {
+  const prisma = getPrisma();
+  const orphansRemoved = await deleteOrphanEmbeddings(projectId);
+  let project: { id: string; name: string; description: string | null };
+  let tasks: TaskForIndexing[];
+
+  try {
+    const found = await prisma.project.findUnique({
+      where: { id: projectId },
+      select: { id: true, name: true, description: true },
+    });
+
+    if (!found) {
+      throw new Error(`reindexProject: no existe el proyecto ${projectId}.`);
+    }
+
+    project = found;
+    tasks = await prisma.task.findMany({
+      where: { projectId },
+      select: {
+        id: true,
+        title: true,
+        description: true,
+        projectId: true,
+        status: true,
+        priority: true,
+      },
+    });
+  } catch (error) {
+    console.error(`[embeddings] Fallo al leer el proyecto ${projectId} para re-indexar:`, error);
+    throw new Error(
+      `No se pudo cargar el proyecto para re-indexarlo: ${error instanceof Error ? error.message : 'error desconocido'}`,
+    );
+  }
+
+  const projectIndexed = await indexProject(project);
+  let tasksIndexed = 0;
+
+  for (const task of tasks) {
+    if (await indexTask(task)) tasksIndexed += 1;
+  }
+
+  return {
+    projectId,
+    project: projectIndexed,
+    tasksTotal: tasks.length,
+    tasksIndexed,
+    orphansRemoved,
+  };
+}
+
+/**
  * Busqueda por similitud coseno sobre `Embedding`.
  *
  * @param query - Pregunta del usuario.
@@ -531,6 +612,51 @@ export async function deleteProjectEmbeddings(projectId: string): Promise<number
   } catch (error) {
     console.error(`[embeddings] Fallo al eliminar los embeddings del proyecto ${projectId}:`, error);
     throw new Error('No se pudieron eliminar los embeddings del proyecto.');
+  }
+}
+
+/**
+ * Elimina los embeddings cuya entidad ya no existe (**huérfanos**).
+ *
+ * No hay ningun `DELETE` de proyectos o tareas que limpie sus vectores, asi
+ * que sin esta operacion un vector sobreviviria a la entidad que lo genero y
+ * apareceria como fuente fantasma en las respuestas del asistente.
+ *
+ * Se usa durante `reindexProject` para sustituir lo que antes eran vectores
+ * de un proveedor de IA ya retirado: lo que no tenga entidad viva se borra y
+ * lo que sí, se vuelve a generar con el modelo actual.
+ *
+ * @param projectId - Si se indica, la limpieza se acota a ese proyecto.
+ * @returns Numero de filas eliminadas.
+ * @throws {Error} Si la consulta a PostgreSQL falla.
+ */
+export async function deleteOrphanEmbeddings(projectId?: string): Promise<number> {
+  try {
+    const prisma = getPrisma();
+
+    // Sin alcance se limpian todos los proyectos y tareas huerfanos.
+    if (projectId === undefined) {
+      return await prisma.$executeRaw`
+        DELETE FROM "Embedding" e
+        WHERE (e."entityType" = 'PROJECT'
+               AND NOT EXISTS (SELECT 1 FROM "Project" p WHERE p."id" = e."entityId"))
+           OR (e."entityType" = 'TASK'
+               AND NOT EXISTS (SELECT 1 FROM "Task" t WHERE t."id" = e."entityId"))
+      `;
+    }
+
+    // Con alcance solo toca las tareas del proyecto: el embedding del proyecto
+    // no puede ser huerfano aqui porque quien llama acaba de comprobar que el
+    // proyecto existe. El filtro por `projectId` usa indice (`@@index`).
+    return await prisma.$executeRaw`
+      DELETE FROM "Embedding" e
+      WHERE e."projectId" = ${projectId}
+        AND e."entityType" = 'TASK'
+        AND NOT EXISTS (SELECT 1 FROM "Task" t WHERE t."id" = e."entityId")
+    `;
+  } catch (error) {
+    console.error('[embeddings] Fallo al eliminar los embeddings huerfanos:', error);
+    throw new Error('No se pudieron eliminar los embeddings huerfanos.');
   }
 }
 
