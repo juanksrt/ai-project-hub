@@ -131,8 +131,9 @@ enum EmbeddingEntityType {
 // nativo, por lo que la columna se declara como tipo nativo no soportado. Eso
 // significa que Prisma Client NUNCA lee ni escribe esta columna: todo acceso al
 // vector se hace con SQL crudo parametrizado (`$queryRaw` / `$executeRaw`).
-// Ver src/lib/embeddings.ts. La dimension (1536) coincide con
-// text-embedding-3-small.
+// Ver src/lib/embeddings.ts. La dimension (1536) no la decide el modelo:
+// Gemini genera 3072 por defecto y se piden 1536 via `outputDimensionality`,
+// lo que permite cambiar de proveedor sin migrar esta columna.
 model Embedding {
   id         String              @id @default(cuid())
   entityType EmbeddingEntityType

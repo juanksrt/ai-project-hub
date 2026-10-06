@@ -11,8 +11,8 @@
  *
  * ## Flujo de indexado
  *
- * 1. `generateEmbedding(texto)` llama al modelo `text-embedding-3-small`
- *    (1536 dimensiones) a traves del Vercel AI SDK.
+ * 1. `generateEmbedding(texto)` llama al modelo `gemini-embedding-2`
+ *    (Google Gemini, capa gratuita) a traves del Vercel AI SDK.
  * 2. `upsertEmbedding(...)` serializa el vector como `[0.1,0.2,...]` y lo
  *    persiste con `ON CONFLICT ("entityType","entityId")`, de modo que
  *    re-indexar una entidad sobrescribe el embedding anterior en vez de
@@ -20,21 +20,40 @@
  * 3. `similaritySearch(...)` ordena por distancia coseno (`<=>`) y devuelve
  *    `1 - distancia` como score de similitud (0 = ajeno, 1 = identico).
  *
- * Si falta `OPENAI_API_KEY` las funciones de generacion lanzan
+ * ## Por que `outputDimensionality`
+ *
+ * `gemini-embedding-2` genera vectores de 3072 dimensiones por defecto, pero
+ * esta entrenado con Matryoshka Representation Learning (MRL) y admite
+ * truncarlos a 128-3072. Se piden explicitamente **1536** para conservar la
+ * columna `vector(1536)` del esquema: asi la migracion de OpenAI a Gemini no
+ * exige ALTER TABLE ni recrear el indice HNSW. Google recomienda 768, 1536 o
+ * 3072; a 1536 el MTEB (68.17) es practicamente identico al de 3072.
+ *
+ * Si falta `GOOGLE_GENERATIVE_AI_API_KEY` las funciones de generacion lanzan
  * `EmbeddingUnavailableError`; las funciones de escritura (`indexEntity`,
  * `indexProject`, `indexTask`) capturan el error y devuelven `false` para que
  * crear o actualizar un proyecto/tarea nunca falle por un problema de
  * indexacion.
  */
-import { openai } from '@ai-sdk/openai';
+import { google } from '@ai-sdk/google';
 import { embed } from 'ai';
 
 import { getPrisma } from '@/lib/prisma';
 
-/** Modelo de embeddings de OpenAI. Requiere `vector(1536)` en el esquema. */
-export const EMBEDDING_MODEL_ID = 'text-embedding-3-small';
+/**
+ * Modelo de embeddings de Google Gemini.
+ *
+ * Sustituye a `text-embedding-004`, apagado por Google el 14/01/2026.
+ * Requiere `vector(1536)` en el esquema (ver `EMBEDDING_DIMENSIONS`).
+ */
+export const EMBEDDING_MODEL_ID = 'gemini-embedding-2';
 
-/** Dimensiones del vector; debe coincidir con `vector(1536)`. */
+/**
+ * Dimensiones del vector; debe coincidir con `vector(1536)`.
+ *
+ * El valor no lo decide el modelo sino `outputDimensionality`, que se envia
+ * en cada llamada desde `generateEmbedding`.
+ */
 export const EMBEDDING_DIMENSIONS = 1536;
 
 /** Numero de resultados que devuelve la busqueda por defecto. */
@@ -43,8 +62,13 @@ export const DEFAULT_TOP_K = 5;
 /** Tope maximo de resultados para evitar consultas excesivamente amplias. */
 export const MAX_TOP_K = 20;
 
-/** Variable de entorno requerida para generar embeddings. */
-export const OPENAI_CREDENTIAL_ENV = 'OPENAI_API_KEY';
+/**
+ * Variable de entorno requerida para generar embeddings.
+ *
+ * Es la que el provider `@ai-sdk/google` lee por defecto; se puede
+ * sobreescribir con `createGoogle({ apiKey })` si hiciera falta.
+ */
+export const GOOGLE_CREDENTIAL_ENV = 'GOOGLE_GENERATIVE_AI_API_KEY';
 
 /** Entidades que pueden tener embedding vectorial. Espejo del enum de Prisma. */
 export type EmbeddingEntityType = 'PROJECT' | 'TASK';
@@ -98,6 +122,20 @@ export interface SearchOptions {
   topK?: number;
 }
 
+/** Contador devuelto por `reindexProject` al terminar. */
+export interface ReindexResult {
+  /** Proyecto re-indexado. */
+  projectId: string;
+  /** `true` si el embedding del proyecto se guardo. */
+  project: boolean;
+  /** Numero de tareas que tiene el proyecto. */
+  tasksTotal: number;
+  /** Tareas cuyo embedding se guardo. */
+  tasksIndexed: number;
+  /** Vectores de tareas/proyectos borrados que se limpiaron al pasar. */
+  orphansRemoved: number;
+}
+
 /**
  * Error lanzado cuando falta la credencial del proveedor de IA.
  *
@@ -123,16 +161,16 @@ interface SimilarityRow {
 }
 
 /**
- * Comprueba que la credencial de OpenAI este definida.
+ * Comprueba que la credencial de Google este definida.
  *
  * Se usa tanto para embeddings como para generar la respuesta del LLM en
- * `/api/chat`: ambos flujos comparten `OPENAI_API_KEY`.
+ * `/api/chat`: ambos flujos comparten `GOOGLE_GENERATIVE_AI_API_KEY`.
  *
  * @param env - Objeto de entorno; por defecto `process.env`.
- * @returns `true` si `OPENAI_API_KEY` existe y no esta vacia.
+ * @returns `true` si `GOOGLE_GENERATIVE_AI_API_KEY` existe y no esta vacia.
  */
-export function hasOpenAiCredentials(env: NodeJS.ProcessEnv = process.env): boolean {
-  return Boolean(env[OPENAI_CREDENTIAL_ENV]?.trim());
+export function hasGoogleCredentials(env: NodeJS.ProcessEnv = process.env): boolean {
+  return Boolean(env[GOOGLE_CREDENTIAL_ENV]?.trim());
 }
 
 /**
@@ -140,8 +178,9 @@ export function hasOpenAiCredentials(env: NodeJS.ProcessEnv = process.env): bool
  *
  * @param embedding - Array de numeros ya generado por el modelo.
  * @returns Cadena con formato `[0.1,0.2,...]`.
- * @throws {Error} Si la dimension no es 1536 o algun valor no es finito:
- * un valor `NaN`/`Infinity` haria que PostgreSQL rechazara toda la escritura.
+ * @throws {Error} Si la dimension no es `EMBEDDING_DIMENSIONS` o algun valor
+ * no es finito: un vector de otra longitud haria que PostgreSQL rechazara
+ * toda la escritura (`1536` datos en una columna `vector(1536)`).
  */
 export function toVectorParam(embedding: ReadonlyArray<number>): string {
   if (embedding.length !== EMBEDDING_DIMENSIONS) {
@@ -189,9 +228,9 @@ export function normalizeTopK(topK?: number): number {
  * Genera el embedding de un texto con el Vercel AI SDK.
  *
  * @param text - Texto a embedir (se recorta antes de enviarlo).
- * @returns Vector de 1536 dimensiones.
+ * @returns Vector de `EMBEDDING_DIMENSIONS` dimensiones.
  * @throws {Error} Si el texto esta vacio o el proveedor devuelve algo inesperado.
- * @throws {EmbeddingUnavailableError} Si falta `OPENAI_API_KEY`.
+ * @throws {EmbeddingUnavailableError} Si falta `GOOGLE_GENERATIVE_AI_API_KEY`.
  */
 export async function generateEmbedding(text: string): Promise<number[]> {
   const value = text.trim();
@@ -200,14 +239,22 @@ export async function generateEmbedding(text: string): Promise<number[]> {
     throw new Error('generateEmbedding: el texto a indexar no puede estar vacio.');
   }
 
-  if (!hasOpenAiCredentials()) {
+  if (!hasGoogleCredentials()) {
     throw new EmbeddingUnavailableError(
-      `Falta la variable de entorno ${OPENAI_CREDENTIAL_ENV}: no se pueden generar embeddings.`,
+      `Falta la variable de entorno ${GOOGLE_CREDENTIAL_ENV}: no se pueden generar embeddings.`,
     );
   }
 
   try {
-    const result = await embed({ model: openai.embedding(EMBEDDING_MODEL_ID), value });
+    const result = await embed({
+      model: google.embeddingModel(EMBEDDING_MODEL_ID),
+      value,
+      // Gemini devuelve 3072 por defecto; se trunca a 1536 para respetar la
+      // columna `vector(1536)` sin necesidad de migrar el esquema.
+      providerOptions: {
+        google: { outputDimensionality: EMBEDDING_DIMENSIONS },
+      },
+    });
     const embedding = result.embedding;
 
     // toVectorParam valida tanto la dimension como la finitud de los valores.
@@ -355,12 +402,79 @@ export async function indexTask(task: TaskForIndexing): Promise<boolean> {
 }
 
 /**
+ * Re-indexa un proyecto entero (proyecto + todas sus tareas).
+ *
+ * Es la operacion de mantenimiento que faltaba para migrar de proveedor de IA
+ * sin tocar cada entidad a mano: primero limpia los vectores que apuntan a
+ * entidades que ya no existen y despues vuelve a generar todos los embeddings
+ * con el modelo actual. El upsert `ON CONFLICT` sobrescribe el vector
+ * anterior, asi que la operacion es **idempotente** y no duplica filas.
+ *
+ * A diferencia de `indexEntity`, los fallos del proveedor no se ocultan: se
+ * devuelven contadores para que quien llama pueda reportar que algo fallo.
+ *
+ * @param projectId - Id del proyecto a re-indexar.
+ * @returns Contadores de lo que se hizo.
+ * @throws {Error} Si el proyecto no existe o la lectura de la base de datos falla.
+ */
+export async function reindexProject(projectId: string): Promise<ReindexResult> {
+  const prisma = getPrisma();
+  const orphansRemoved = await deleteOrphanEmbeddings(projectId);
+  let project: { id: string; name: string; description: string | null };
+  let tasks: TaskForIndexing[];
+
+  try {
+    const found = await prisma.project.findUnique({
+      where: { id: projectId },
+      select: { id: true, name: true, description: true },
+    });
+
+    if (!found) {
+      throw new Error(`reindexProject: no existe el proyecto ${projectId}.`);
+    }
+
+    project = found;
+    tasks = await prisma.task.findMany({
+      where: { projectId },
+      select: {
+        id: true,
+        title: true,
+        description: true,
+        projectId: true,
+        status: true,
+        priority: true,
+      },
+    });
+  } catch (error) {
+    console.error(`[embeddings] Fallo al leer el proyecto ${projectId} para re-indexar:`, error);
+    throw new Error(
+      `No se pudo cargar el proyecto para re-indexarlo: ${error instanceof Error ? error.message : 'error desconocido'}`,
+    );
+  }
+
+  const projectIndexed = await indexProject(project);
+  let tasksIndexed = 0;
+
+  for (const task of tasks) {
+    if (await indexTask(task)) tasksIndexed += 1;
+  }
+
+  return {
+    projectId,
+    project: projectIndexed,
+    tasksTotal: tasks.length,
+    tasksIndexed,
+    orphansRemoved,
+  };
+}
+
+/**
  * Busqueda por similitud coseno sobre `Embedding`.
  *
  * @param query - Pregunta del usuario.
  * @param options - `projectId` opcional y numero de resultados.
  * @returns Los `topK` resultados mas similares, ordenados de mayor a menor.
- * @throws {EmbeddingUnavailableError} Si falta `OPENAI_API_KEY`.
+ * @throws {EmbeddingUnavailableError} Si falta `GOOGLE_GENERATIVE_AI_API_KEY`.
  * @throws {Error} Si la consulta a PostgreSQL falla.
  */
 export async function similaritySearch(
@@ -498,6 +612,51 @@ export async function deleteProjectEmbeddings(projectId: string): Promise<number
   } catch (error) {
     console.error(`[embeddings] Fallo al eliminar los embeddings del proyecto ${projectId}:`, error);
     throw new Error('No se pudieron eliminar los embeddings del proyecto.');
+  }
+}
+
+/**
+ * Elimina los embeddings cuya entidad ya no existe (**huérfanos**).
+ *
+ * No hay ningun `DELETE` de proyectos o tareas que limpie sus vectores, asi
+ * que sin esta operacion un vector sobreviviria a la entidad que lo genero y
+ * apareceria como fuente fantasma en las respuestas del asistente.
+ *
+ * Se usa durante `reindexProject` para sustituir lo que antes eran vectores
+ * de un proveedor de IA ya retirado: lo que no tenga entidad viva se borra y
+ * lo que sí, se vuelve a generar con el modelo actual.
+ *
+ * @param projectId - Si se indica, la limpieza se acota a ese proyecto.
+ * @returns Numero de filas eliminadas.
+ * @throws {Error} Si la consulta a PostgreSQL falla.
+ */
+export async function deleteOrphanEmbeddings(projectId?: string): Promise<number> {
+  try {
+    const prisma = getPrisma();
+
+    // Sin alcance se limpian todos los proyectos y tareas huerfanos.
+    if (projectId === undefined) {
+      return await prisma.$executeRaw`
+        DELETE FROM "Embedding" e
+        WHERE (e."entityType" = 'PROJECT'
+               AND NOT EXISTS (SELECT 1 FROM "Project" p WHERE p."id" = e."entityId"))
+           OR (e."entityType" = 'TASK'
+               AND NOT EXISTS (SELECT 1 FROM "Task" t WHERE t."id" = e."entityId"))
+      `;
+    }
+
+    // Con alcance solo toca las tareas del proyecto: el embedding del proyecto
+    // no puede ser huerfano aqui porque quien llama acaba de comprobar que el
+    // proyecto existe. El filtro por `projectId` usa indice (`@@index`).
+    return await prisma.$executeRaw`
+      DELETE FROM "Embedding" e
+      WHERE e."projectId" = ${projectId}
+        AND e."entityType" = 'TASK'
+        AND NOT EXISTS (SELECT 1 FROM "Task" t WHERE t."id" = e."entityId")
+    `;
+  } catch (error) {
+    console.error('[embeddings] Fallo al eliminar los embeddings huerfanos:', error);
+    throw new Error('No se pudieron eliminar los embeddings huerfanos.');
   }
 }
 

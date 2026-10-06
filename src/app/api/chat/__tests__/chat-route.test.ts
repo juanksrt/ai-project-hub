@@ -8,7 +8,7 @@ const {
   createTextStreamResponseMock,
   similaritySearchMock,
   lexicalSearchMock,
-  hasOpenAiCredentialsMock,
+  hasGoogleCredentialsMock,
   findManyMock,
 } = vi.hoisted(() => ({
   authMock: vi.fn(),
@@ -16,7 +16,7 @@ const {
   createTextStreamResponseMock: vi.fn(),
   similaritySearchMock: vi.fn(),
   lexicalSearchMock: vi.fn(),
-  hasOpenAiCredentialsMock: vi.fn(() => true),
+  hasGoogleCredentialsMock: vi.fn(() => true),
   findManyMock: vi.fn(),
 }));
 
@@ -28,8 +28,8 @@ vi.mock('ai', () => ({
   createTextStreamResponse: createTextStreamResponseMock,
 }));
 
-vi.mock('@ai-sdk/openai', () => ({
-  openai: Object.assign(vi.fn(), { chat: vi.fn(() => 'chat-model'), embedding: vi.fn() }),
+vi.mock('@ai-sdk/google', () => ({
+  google: Object.assign(vi.fn(() => 'chat-model'), { embeddingModel: vi.fn() }),
 }));
 
 vi.mock('@/lib/prisma', () => ({
@@ -45,7 +45,7 @@ vi.mock('@/lib/embeddings', async (importOriginal) => {
     ...actual,
     similaritySearch: similaritySearchMock,
     lexicalSearch: lexicalSearchMock,
-    hasOpenAiCredentials: hasOpenAiCredentialsMock,
+    hasGoogleCredentials: hasGoogleCredentialsMock,
   };
 });
 
@@ -118,7 +118,7 @@ describe('POST /api/chat', () => {
     consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
 
     authMock.mockResolvedValue({ user: { id: 'user-1' } });
-    hasOpenAiCredentialsMock.mockReturnValue(true);
+    hasGoogleCredentialsMock.mockReturnValue(true);
     similaritySearchMock.mockResolvedValue([HIT]);
     lexicalSearchMock.mockResolvedValue([HIT]);
     findManyMock.mockResolvedValue([DOCUMENT_CHUNK]);
@@ -239,8 +239,10 @@ describe('POST /api/chat', () => {
   });
 
   it('responde con modo context y busqueda lexica si falta la credencial de IA', async () => {
-    hasOpenAiCredentialsMock.mockReturnValue(false);
-    similaritySearchMock.mockRejectedValue(new EmbeddingUnavailableError('Falta OPENAI_API_KEY'));
+    hasGoogleCredentialsMock.mockReturnValue(false);
+    similaritySearchMock.mockRejectedValue(
+      new EmbeddingUnavailableError('Falta GOOGLE_GENERATIVE_AI_API_KEY'),
+    );
 
     const response = await POST(makeRequest({ messages: VALID_MESSAGES }));
     const text = await response.text();

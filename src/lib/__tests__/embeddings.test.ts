@@ -2,17 +2,25 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Los dobles se declaran con vi.hoisted para que esten disponibles dentro de
 // los factories de vi.mock, que Vitest eleva por encima de los imports.
-const { embedMock, openaiMock, executeRawMock, queryRawMock } = vi.hoisted(() => ({
-  embedMock: vi.fn(),
-  openaiMock: Object.assign(vi.fn(), { embedding: vi.fn(() => 'embedding-model') }),
-  executeRawMock: vi.fn(),
-  queryRawMock: vi.fn(),
-}));
+const { embedMock, googleMock, executeRawMock, queryRawMock, projectFindUniqueMock, taskFindManyMock } =
+  vi.hoisted(() => ({
+    embedMock: vi.fn(),
+    googleMock: Object.assign(vi.fn(), { embeddingModel: vi.fn(() => 'embedding-model') }),
+    executeRawMock: vi.fn(),
+    queryRawMock: vi.fn(),
+    projectFindUniqueMock: vi.fn(),
+    taskFindManyMock: vi.fn(),
+  }));
 
 vi.mock('ai', () => ({ embed: embedMock }));
-vi.mock('@ai-sdk/openai', () => ({ openai: openaiMock }));
+vi.mock('@ai-sdk/google', () => ({ google: googleMock }));
 vi.mock('@/lib/prisma', () => ({
-  getPrisma: () => ({ $executeRaw: executeRawMock, $queryRaw: queryRawMock }),
+  getPrisma: () => ({
+    $executeRaw: executeRawMock,
+    $queryRaw: queryRawMock,
+    project: { findUnique: projectFindUniqueMock },
+    task: { findMany: taskFindManyMock },
+  }),
 }));
 
 import {
@@ -22,13 +30,15 @@ import {
   MAX_TOP_K,
   buildTaskContent,
   clampScore,
+  deleteOrphanEmbeddings,
   deleteProjectEmbeddings,
   generateEmbedding,
-  hasOpenAiCredentials,
+  hasGoogleCredentials,
   indexProject,
   indexTask,
   lexicalSearch,
   normalizeTopK,
+  reindexProject,
   similaritySearch,
   toVectorParam,
   upsertEmbedding,
@@ -49,15 +59,17 @@ interface RecordedMock {
 }
 
 /** Extrae el SQL crudo de una llamada etiquetada (`$executeRaw` / `$queryRaw`). */
-function callSql(mock: RecordedMock): string {
-  const call = mock.mock.calls[mock.mock.calls.length - 1] ?? [];
+function callSql(mock: RecordedMock, index?: number): string {
+  const position = index ?? mock.mock.calls.length - 1;
+  const call = mock.mock.calls[position] ?? [];
   const strings = call[0] as TemplateStringsArray;
   return Array.from(strings).join(' ? ');
 }
 
 /** Extrae los parametros interpolados de una llamada etiquetada. */
-function callValues(mock: RecordedMock): unknown[] {
-  const call = mock.mock.calls[mock.mock.calls.length - 1] ?? [];
+function callValues(mock: RecordedMock, index?: number): unknown[] {
+  const position = index ?? mock.mock.calls.length - 1;
+  const call = mock.mock.calls[position] ?? [];
   return call.slice(1);
 }
 
@@ -104,23 +116,30 @@ describe('generateEmbedding', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    process.env.OPENAI_API_KEY = 'sk-test';
+    process.env.GOOGLE_GENERATIVE_AI_API_KEY = 'sk-test';
     consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     embedMock.mockResolvedValue({ embedding: VALID_VECTOR });
   });
 
   afterEach(() => {
     consoleErrorSpy.mockRestore();
-    delete process.env.OPENAI_API_KEY;
+    delete process.env.GOOGLE_GENERATIVE_AI_API_KEY;
   });
 
-  it('llama al modelo con el texto recortado', async () => {
+  it('llama al modelo con el texto recortado y 1536 dimensiones', async () => {
     const embedding = await generateEmbedding('  Configurar pgvector  ');
 
     expect(embedding).toHaveLength(EMBEDDING_DIMENSIONS);
-    expect(openaiMock.embedding).toHaveBeenCalledWith('text-embedding-3-small');
+    expect(googleMock.embeddingModel).toHaveBeenCalledWith('gemini-embedding-2');
     expect(embedMock).toHaveBeenCalledWith(
-      expect.objectContaining({ model: 'embedding-model', value: 'Configurar pgvector' }),
+      expect.objectContaining({
+        model: 'embedding-model',
+        value: 'Configurar pgvector',
+        // Pide 1536 a Gemini para respetar la columna `vector(1536)`.
+        providerOptions: {
+          google: { outputDimensionality: EMBEDDING_DIMENSIONS },
+        },
+      }),
     );
   });
 
@@ -129,10 +148,10 @@ describe('generateEmbedding', () => {
     expect(embedMock).not.toHaveBeenCalled();
   });
 
-  it('lanza EmbeddingUnavailableError si falta OPENAI_API_KEY', async () => {
-    delete process.env.OPENAI_API_KEY;
+  it('lanza EmbeddingUnavailableError si falta GOOGLE_GENERATIVE_AI_API_KEY', async () => {
+    delete process.env.GOOGLE_GENERATIVE_AI_API_KEY;
 
-    expect(hasOpenAiCredentials()).toBe(false);
+    expect(hasGoogleCredentials()).toBe(false);
     await expect(generateEmbedding('pregunta')).rejects.toBeInstanceOf(EmbeddingUnavailableError);
     expect(embedMock).not.toHaveBeenCalled();
   });
@@ -207,7 +226,7 @@ describe('indexProject / indexTask', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    process.env.OPENAI_API_KEY = 'sk-test';
+    process.env.GOOGLE_GENERATIVE_AI_API_KEY = 'sk-test';
     consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     embedMock.mockResolvedValue({ embedding: VALID_VECTOR });
     executeRawMock.mockResolvedValue(1);
@@ -215,7 +234,7 @@ describe('indexProject / indexTask', () => {
 
   afterEach(() => {
     consoleErrorSpy.mockRestore();
-    delete process.env.OPENAI_API_KEY;
+    delete process.env.GOOGLE_GENERATIVE_AI_API_KEY;
   });
 
   it('indexProject guarda el embedding del proyecto', async () => {
@@ -272,7 +291,7 @@ describe('indexProject / indexTask', () => {
   });
 
   it('devuelve false si falta la credencial, sin romper la creacion', async () => {
-    delete process.env.OPENAI_API_KEY;
+    delete process.env.GOOGLE_GENERATIVE_AI_API_KEY;
 
     await expect(indexProject({ id: PROJECT_ID, name: 'Proyecto' })).resolves.toBe(false);
     expect(executeRawMock).not.toHaveBeenCalled();
@@ -293,7 +312,7 @@ describe('similaritySearch', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    process.env.OPENAI_API_KEY = 'sk-test';
+    process.env.GOOGLE_GENERATIVE_AI_API_KEY = 'sk-test';
     consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     embedMock.mockResolvedValue({ embedding: VALID_VECTOR });
     queryRawMock.mockResolvedValue([DB_ROW]);
@@ -301,7 +320,7 @@ describe('similaritySearch', () => {
 
   afterEach(() => {
     consoleErrorSpy.mockRestore();
-    delete process.env.OPENAI_API_KEY;
+    delete process.env.GOOGLE_GENERATIVE_AI_API_KEY;
   });
 
   it('consulta por distancia coseno, ordena y limita resultados', async () => {
@@ -342,7 +361,7 @@ describe('similaritySearch', () => {
   });
 
   it('no consulta la base de datos si falta la credencial de IA', async () => {
-    delete process.env.OPENAI_API_KEY;
+    delete process.env.GOOGLE_GENERATIVE_AI_API_KEY;
 
     await expect(similaritySearch('pregunta')).rejects.toBeInstanceOf(EmbeddingUnavailableError);
     expect(queryRawMock).not.toHaveBeenCalled();
@@ -415,5 +434,168 @@ describe('deleteProjectEmbeddings', () => {
       'No se pudieron eliminar los embeddings',
     );
     expect(consoleErrorSpy).toHaveBeenCalled();
+  });
+});
+
+describe('deleteOrphanEmbeddings', () => {
+  let consoleErrorSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    executeRawMock.mockResolvedValue(2);
+  });
+
+  afterEach(() => {
+    consoleErrorSpy.mockRestore();
+  });
+
+  it('sin alcance limpia proyectos y tareas que ya no existen', async () => {
+    await expect(deleteOrphanEmbeddings()).resolves.toBe(2);
+
+    const sql = callSql(executeRawMock);
+    expect(sql).toContain('DELETE FROM "Embedding" e');
+    expect(sql).toContain('NOT EXISTS (SELECT 1 FROM "Project"');
+    expect(sql).toContain('NOT EXISTS (SELECT 1 FROM "Task"');
+    // Sin parametros: no se interpola nada, asi que no hay riesgo de inyeccion.
+    expect(callValues(executeRawMock)).toEqual([]);
+  });
+
+  it('con alcance se acota al proyecto y solo mira tareas', async () => {
+    executeRawMock.mockResolvedValue(1);
+
+    await expect(deleteOrphanEmbeddings(PROJECT_ID)).resolves.toBe(1);
+
+    const sql = callSql(executeRawMock);
+    expect(sql).toContain('DELETE FROM "Embedding" e');
+    expect(sql).toContain('WHERE e."projectId" =');
+    expect(sql).toContain('e."entityType" = \'TASK\'');
+    expect(sql).not.toContain('"Project" p');
+    expect(callValues(executeRawMock)).toEqual([PROJECT_ID]);
+  });
+
+  it('lanza si la base de datos falla', async () => {
+    executeRawMock.mockRejectedValue(new Error('timeout'));
+
+    await expect(deleteOrphanEmbeddings()).rejects.toThrow(
+      'No se pudieron eliminar los embeddings huerfanos',
+    );
+    expect(consoleErrorSpy).toHaveBeenCalled();
+  });
+});
+
+describe('reindexProject', () => {
+  let consoleErrorSpy: ReturnType<typeof vi.spyOn>;
+
+  const PROJECT = {
+    id: PROJECT_ID,
+    name: 'Lanzamiento SaaS IA',
+    description: 'Plataforma con RAG',
+  };
+
+  const TASKS = [
+    {
+      id: TASK_ID,
+      title: 'Crear pipeline de RAG',
+      description: null,
+      projectId: PROJECT_ID,
+      status: 'PENDING',
+      priority: 'MEDIUM',
+    },
+  ];
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.env.GOOGLE_GENERATIVE_AI_API_KEY = 'test-key';
+    consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    embedMock.mockResolvedValue({ embedding: VALID_VECTOR });
+    executeRawMock.mockResolvedValue(1);
+    projectFindUniqueMock.mockResolvedValue(PROJECT);
+    taskFindManyMock.mockResolvedValue(TASKS);
+  });
+
+  afterEach(() => {
+    consoleErrorSpy.mockRestore();
+    delete process.env.GOOGLE_GENERATIVE_AI_API_KEY;
+  });
+
+  it('limpia huerfanos y luego re-indexa el proyecto y sus tareas', async () => {
+    const result = await reindexProject(PROJECT_ID);
+
+    expect(result).toEqual({
+      projectId: PROJECT_ID,
+      project: true,
+      tasksTotal: 1,
+      tasksIndexed: 1,
+      orphansRemoved: 1,
+    });
+
+    // Orden de llamadas: purga -> INSERT del proyecto -> INSERT de la tarea.
+    expect(callSql(executeRawMock, 0)).toContain('DELETE FROM "Embedding" e');
+    expect(callValues(executeRawMock, 0)).toEqual([PROJECT_ID]);
+    expect(callSql(executeRawMock, 1)).toContain('INSERT INTO "Embedding"');
+    expect(callValues(executeRawMock, 1)).toEqual(
+      expect.arrayContaining(['PROJECT', PROJECT_ID, 'Lanzamiento SaaS IA']),
+    );
+    expect(callValues(executeRawMock, 2)).toEqual(
+      expect.arrayContaining(['TASK', TASK_ID, PROJECT_ID]),
+    );
+
+    expect(projectFindUniqueMock).toHaveBeenCalledWith({
+      where: { id: PROJECT_ID },
+      select: { id: true, name: true, description: true },
+    });
+    expect(taskFindManyMock).toHaveBeenCalledWith({
+      where: { projectId: PROJECT_ID },
+      select: {
+        id: true,
+        title: true,
+        description: true,
+        projectId: true,
+        status: true,
+        priority: true,
+      },
+    });
+  });
+
+  it('lanza si el proyecto no existe', async () => {
+    projectFindUniqueMock.mockResolvedValue(null);
+
+    await expect(reindexProject('no-existe')).rejects.toThrow('No se pudo cargar el proyecto');
+    expect(embedMock).not.toHaveBeenCalled();
+  });
+
+  it('propaga el error de base de datos con un mensaje claro', async () => {
+    projectFindUniqueMock.mockRejectedValue(new Error('conexion rechazada'));
+
+    await expect(reindexProject(PROJECT_ID)).rejects.toThrow('No se pudo cargar el proyecto');
+    expect(consoleErrorSpy).toHaveBeenCalled();
+  });
+
+  it('reporta los contadores aunque el proveedor de IA falle', async () => {
+    embedMock.mockRejectedValue(new Error('rate limit'));
+
+    const result = await reindexProject(PROJECT_ID);
+
+    expect(result.project).toBe(false);
+    expect(result.tasksTotal).toBe(1);
+    expect(result.tasksIndexed).toBe(0);
+    expect(consoleErrorSpy).toHaveBeenCalled();
+  });
+
+  it('devuelve cero tareas cuando el proyecto no tiene ninguna', async () => {
+    taskFindManyMock.mockResolvedValue([]);
+
+    const result = await reindexProject(PROJECT_ID);
+
+    expect(result).toEqual({
+      projectId: PROJECT_ID,
+      project: true,
+      tasksTotal: 0,
+      tasksIndexed: 0,
+      orphansRemoved: 1,
+    });
+    // Solo la purga y el INSERT del proyecto: nada de tareas.
+    expect(executeRawMock).toHaveBeenCalledTimes(2);
   });
 });
