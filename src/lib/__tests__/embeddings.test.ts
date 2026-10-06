@@ -2,15 +2,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Los dobles se declaran con vi.hoisted para que esten disponibles dentro de
 // los factories de vi.mock, que Vitest eleva por encima de los imports.
-const { embedMock, openaiMock, executeRawMock, queryRawMock } = vi.hoisted(() => ({
+const { embedMock, googleMock, executeRawMock, queryRawMock } = vi.hoisted(() => ({
   embedMock: vi.fn(),
-  openaiMock: Object.assign(vi.fn(), { embedding: vi.fn(() => 'embedding-model') }),
+  googleMock: Object.assign(vi.fn(), { embeddingModel: vi.fn(() => 'embedding-model') }),
   executeRawMock: vi.fn(),
   queryRawMock: vi.fn(),
 }));
 
 vi.mock('ai', () => ({ embed: embedMock }));
-vi.mock('@ai-sdk/openai', () => ({ openai: openaiMock }));
+vi.mock('@ai-sdk/google', () => ({ google: googleMock }));
 vi.mock('@/lib/prisma', () => ({
   getPrisma: () => ({ $executeRaw: executeRawMock, $queryRaw: queryRawMock }),
 }));
@@ -24,7 +24,7 @@ import {
   clampScore,
   deleteProjectEmbeddings,
   generateEmbedding,
-  hasOpenAiCredentials,
+  hasGoogleCredentials,
   indexProject,
   indexTask,
   lexicalSearch,
@@ -104,23 +104,30 @@ describe('generateEmbedding', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    process.env.OPENAI_API_KEY = 'sk-test';
+    process.env.GOOGLE_GENERATIVE_AI_API_KEY = 'sk-test';
     consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     embedMock.mockResolvedValue({ embedding: VALID_VECTOR });
   });
 
   afterEach(() => {
     consoleErrorSpy.mockRestore();
-    delete process.env.OPENAI_API_KEY;
+    delete process.env.GOOGLE_GENERATIVE_AI_API_KEY;
   });
 
-  it('llama al modelo con el texto recortado', async () => {
+  it('llama al modelo con el texto recortado y 1536 dimensiones', async () => {
     const embedding = await generateEmbedding('  Configurar pgvector  ');
 
     expect(embedding).toHaveLength(EMBEDDING_DIMENSIONS);
-    expect(openaiMock.embedding).toHaveBeenCalledWith('text-embedding-3-small');
+    expect(googleMock.embeddingModel).toHaveBeenCalledWith('gemini-embedding-2');
     expect(embedMock).toHaveBeenCalledWith(
-      expect.objectContaining({ model: 'embedding-model', value: 'Configurar pgvector' }),
+      expect.objectContaining({
+        model: 'embedding-model',
+        value: 'Configurar pgvector',
+        // Pide 1536 a Gemini para respetar la columna `vector(1536)`.
+        providerOptions: {
+          google: { outputDimensionality: EMBEDDING_DIMENSIONS },
+        },
+      }),
     );
   });
 
@@ -129,10 +136,10 @@ describe('generateEmbedding', () => {
     expect(embedMock).not.toHaveBeenCalled();
   });
 
-  it('lanza EmbeddingUnavailableError si falta OPENAI_API_KEY', async () => {
-    delete process.env.OPENAI_API_KEY;
+  it('lanza EmbeddingUnavailableError si falta GOOGLE_GENERATIVE_AI_API_KEY', async () => {
+    delete process.env.GOOGLE_GENERATIVE_AI_API_KEY;
 
-    expect(hasOpenAiCredentials()).toBe(false);
+    expect(hasGoogleCredentials()).toBe(false);
     await expect(generateEmbedding('pregunta')).rejects.toBeInstanceOf(EmbeddingUnavailableError);
     expect(embedMock).not.toHaveBeenCalled();
   });
@@ -207,7 +214,7 @@ describe('indexProject / indexTask', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    process.env.OPENAI_API_KEY = 'sk-test';
+    process.env.GOOGLE_GENERATIVE_AI_API_KEY = 'sk-test';
     consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     embedMock.mockResolvedValue({ embedding: VALID_VECTOR });
     executeRawMock.mockResolvedValue(1);
@@ -215,7 +222,7 @@ describe('indexProject / indexTask', () => {
 
   afterEach(() => {
     consoleErrorSpy.mockRestore();
-    delete process.env.OPENAI_API_KEY;
+    delete process.env.GOOGLE_GENERATIVE_AI_API_KEY;
   });
 
   it('indexProject guarda el embedding del proyecto', async () => {
@@ -272,7 +279,7 @@ describe('indexProject / indexTask', () => {
   });
 
   it('devuelve false si falta la credencial, sin romper la creacion', async () => {
-    delete process.env.OPENAI_API_KEY;
+    delete process.env.GOOGLE_GENERATIVE_AI_API_KEY;
 
     await expect(indexProject({ id: PROJECT_ID, name: 'Proyecto' })).resolves.toBe(false);
     expect(executeRawMock).not.toHaveBeenCalled();
@@ -293,7 +300,7 @@ describe('similaritySearch', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    process.env.OPENAI_API_KEY = 'sk-test';
+    process.env.GOOGLE_GENERATIVE_AI_API_KEY = 'sk-test';
     consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     embedMock.mockResolvedValue({ embedding: VALID_VECTOR });
     queryRawMock.mockResolvedValue([DB_ROW]);
@@ -301,7 +308,7 @@ describe('similaritySearch', () => {
 
   afterEach(() => {
     consoleErrorSpy.mockRestore();
-    delete process.env.OPENAI_API_KEY;
+    delete process.env.GOOGLE_GENERATIVE_AI_API_KEY;
   });
 
   it('consulta por distancia coseno, ordena y limita resultados', async () => {
@@ -342,7 +349,7 @@ describe('similaritySearch', () => {
   });
 
   it('no consulta la base de datos si falta la credencial de IA', async () => {
-    delete process.env.OPENAI_API_KEY;
+    delete process.env.GOOGLE_GENERATIVE_AI_API_KEY;
 
     await expect(similaritySearch('pregunta')).rejects.toBeInstanceOf(EmbeddingUnavailableError);
     expect(queryRawMock).not.toHaveBeenCalled();
