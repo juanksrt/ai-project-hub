@@ -908,6 +908,218 @@ Cierra el pendiente nº 2 de la Fase 6 (*"Re-indexación en lote"*).
 | # | Tarea | Motivo |
 |---|---|---|
 | 1 | Prefijos de *task type* en `generateEmbedding` | Google recomienda `task: search result \| query:` / `title: ... \| text:` para RAG asimétrico con `gemini-embedding-2` |
-| 2 | Clave en **Vercel** | Ya está en `.env.local` (local); falta añadir `GOOGLE_GENERATIVE_AI_API_KEY` en las variables de entorno del despliegue |
+| 2 | Clave en **Vercel** | ✅ Hecho tras el merge de la Fase 7: `GOOGLE_GENERATIVE_AI_API_KEY`, `AUTH_SECRET` y `DATABASE_URL` están como *Secrets* de Vercel (Production + Preview) |
 | 3 | Botón de re-indexado en el Dashboard | El endpoint existe y está probado, pero no hay UI que lo lance |
 | 4 | Pendientes de la Fase 6 no abordados aquí | Embeddings de `DocumentChunk`, botón *+ Nuevo Proyecto*, scoping por usuario |
+
+---
+
+## 🎨 Fase 8 — Rediseño visual del frontend (UI/UX)
+
+**Problema:** la interfaz tenía pinta de proyecto sin pulir: dos cabeceras
+apiladas en el Dashboard, el chat con una altura fija de 600 px, sin página de
+login propia y con la portada en HTML crudo. Y, sobre todo, **no se veía nada
+de lo que se había escrito** (ver punto 1).
+
+**Rama:** `feature/frontend-ui-redesign` → todo vía Pull Request, siguiendo el
+`AGENT.md` §3 (*Modo Plan*): primero se presentó el plan con los tres alcances
+abiertos (tema, portada y nombre de la ruta) y se esperó a la aprobación antes
+de tocar un solo fichero.
+
+### 1. 🚨 Hallazgo: Tailwind estaba instalado pero **nunca se conectó**
+
+| Comprobación | Resultado |
+|---|---|
+| `tailwind.config.*` | ❌ no existía |
+| `postcss.config.*` | ❌ no existía |
+| Ficheros `.css` en todo el repo | ❌ **0** |
+| CSS compilado en `.next/` | ❌ **0 bytes** |
+
+`tailwindcss@3.4.1`, `autoprefixer` y `postcss` estaban en `devDependencies`,
+y en `layout.tsx` ya se usaban `bg-slate-950`, `border-slate-800` y decenas de
+clases más… que **no generaban una sola línea de CSS**. La aplicación se pintaba
+con los estilos por defecto del navegador.
+
+> Next.js no inventa la configuración PostCSS de Tailwind: sin
+> `postcss.config.mjs` el plugin no se ejecuta. Cualquier "mejora de estilos"
+> anterior a este punto era puro teatro.
+
+**Solución (paso 0 obligatorio):** `postcss.config.mjs` + `tailwind.config.js`
++ `src/app/globals.css`, importado desde `layout.tsx`. Verificado con
+`npm run build`: **0 → 22.232 bytes** de CSS con `.bg-canvas`,
+`.gradient-brand`, `.skeleton`, `.text-gradient` y `.dark{`.
+
+### 2. Sistema de tokens en lugar de colores crudos
+
+Los colores se declaran como variables CSS con canales RGB **separados por
+espacios** (no hex) para que Tailwind pueda componerlos con opacidad:
+
+```css
+--c-surface: 255 255 255;
+```
+```
+bg-surface/70   →   rgb(255 255 255 / 0.7)
+```
+
+En `tailwind.config.js` se mapean con el marcador `<alpha-value>`, de forma que
+`extend.colors` **añade** los alias sin borrar la paleta por defecto:
+
+| Token | Uso |
+|---|---|
+| `canvas` | fondo de página |
+| `surface` / `raised` | tarjetas / estados hover |
+| `line` / `line-strong` | bordes |
+| `ink` / `muted` | texto principal / secundario |
+| `accent` (`strong`, `soft`) | marca |
+| `ok` / `warn` / `danger` | estados de proyectos, tareas y errores |
+
+Resultado: `grep` en `src/` de `slate-\d`, `indigo-\d` o `red-\d` → **0
+coincidencias**. Un solo cambio en `globals.css` recolorea toda la aplicación.
+
+### 3. Tema oscuro + claro con persistencia
+
+El punto 2 del enunciado pedía *"tema oscuro/claro"*, así que se implementó
+como **clase `.dark` en `<html>`** (`darkMode: 'class'`) y no con
+`prefers-color-scheme`, para que el usuario pueda alternar y la elección
+sobreviva a un recargue.
+
+- `<html className="dark">` → el SSR siempre pinta oscuro (identidad actual).
+- Un script **inline al inicio del `<body>`** aplica la elección guardada en
+  `localStorage` antes del primer pintado: **sin destello blanco**.
+- `suppressHydrationWarning` en `<html>` absorbe el cambio de clase respecto
+  al HTML del servidor.
+- `ThemeToggle` en la navegación; si `localStorage` está bloqueado, el tema
+  queda en memoria y no se rompe nada.
+
+### 4. Página de login `/login`
+
+No existía: Auth.js servía su formulario genérico en `/api/auth/signin`.
+
+| Archivo | Qué hace |
+|---|---|
+| `src/lib/auth-config.ts` | `pages: { signIn: '/login' }` → tanto el botón *Ingresar* como el proveedor Credentials aterrizan en la página propia |
+| `src/app/login/page.tsx` | **Server Component** (para exportar `metadata`) con panel de marca |
+| `src/app/login/LoginForm.tsx` | **Client Component** con la lógica |
+| `src/lib/login-schema.ts` | Validación con Zod, patrón `*-schema.ts` del repo |
+
+**Flujo:** validación local → `signIn('credentials', { redirect: false })` →
+`router.push('/Dashboard')` solo si `error` viene vacío. Con `redirect: false`
+el fallo se muestra **dentro de la propia página** en vez de saltar a la
+página de error de Auth.js.
+
+- Errores **por campo** (`aria-invalid`, `aria-describedby`, `role="alert"`).
+- Durante la petición: campos bloqueados y botón con spinner (`aria-busy`), imposible enviar dos veces.
+- Un único mensaje para usuario inexistente o contraseña mala: evita filtrar qué cuentas existen.
+- Mostrar/ocultar contraseña con `aria-pressed`.
+
+El **test que impedía `pages.signIn`** (`"apuntar a /api/auth/signin crea un
+bucle"`) se reformuló: ahora exige `/login` y prohíbe explícitamente las rutas
+internas de Auth.js, que sí crearían bucle. Y se añadió un test que **lee la
+ruta del disco** para garantizar que `pages.signIn` siempre apunta a una
+página que existe.
+
+### 5. Skeletons de carga
+
+| Fichero | Cuándo se ve |
+|---|---|
+| `src/components/ui/Skeleton.tsx` | Barra base + métrica, tarjeta de proyecto, fila de tarea y panel de chat |
+| `src/app/Dashboard/loading.tsx` | Mientras App Router consulta Neon (`Suspense` automático de Next) |
+| `ChatSidebar` | Barras animadas + *"Buscando fuentes similares en PostgreSQL…"* antes del primer chunk |
+
+La regla `.skeleton` se define en `@layer components` **con `@apply`**, igual
+que `.gradient-brand` y `.text-gradient`: en `globals.css` no hay una sola
+regla escrita a mano (AGENT.md §5), todo pasa por utilities de Tailwind. El
+barrido usa `animate-shimmer`, cuyos `keyframes` viven en
+`theme.extend.keyframes`, y al estar en la capa `components` cualquier
+`rounded-xl` de la utility lo sobreescribe sin luchar. Los esqueletos repiten
+la rejilla del contenido real, así que **no hay salto** cuando llegan los
+datos.
+
+### 6. Responsive
+
+| Antes | Después |
+|---|---|
+| Cabecera del `layout` + cabecera del Dashboard **apiladas** | Una sola cabecera global (`sticky`, `backdrop-blur`), la del Dashboard eliminada |
+| Chat `h-[600px]` fijo | `h-[70vh] min-h-[420px]` en móvil → `lg:h-[640px]` en escritorio, y `lg:sticky` para que siga la lectura |
+| Rejilla sin breakpoints | `grid-cols-1 lg:grid-cols-4` (contenido `lg:col-span-3` + chat) |
+| Botones *Ingresar / Cerrar sesión* con tamaños fijos | Padding fijo `px-4 py-2` en los tres estados para que **no cambie de tamaño** al alternar sesión |
+| Enlace *Dashboard* siempre visible | Oculto por debajo de `sm` (el menú de marca y los accesos siguen disponibles) |
+
+Además: estados vacíos con borde discontinuo (proyectos y tareas), tarjetas con
+`hover:-translate-y-0.5 hover:shadow-lift`, el botón *+ Nuevo Proyecto* pasa a
+`disabled` con `title` explicativo en lugar de ser un botón muerto (sigue
+pendiente el formulario, Fase 6), y el modal de *Nueva Tarea* gana
+`max-h-[90vh] overflow-y-auto` para no salirse de la pantalla en móviles
+pequeños.
+
+### 7. Cambios por archivo
+
+| Archivo | Cambio |
+|---|---|
+| `postcss.config.mjs`, `tailwind.config.js`, `src/app/globals.css` | **Nuevos** — puesta en marcha de Tailwind + tokens + gradientes + `.skeleton` |
+| `src/app/layout.tsx` | Importa `globals.css`, script de tema, cabecera única responsive y `ThemeToggle` |
+| `src/components/features/ThemeToggle.tsx` | **Nuevo** — alterna `.dark` y persiste en `localStorage` |
+| `src/components/ui/Badge.tsx` | **Nuevo** — `Badge`, `StatusBadge`, `PriorityBadge` (traducción ES + tono) |
+| `src/components/ui/Skeleton.tsx` | **Nuevo** — esqueletos reutilizables |
+| `src/app/Dashboard/loading.tsx` | **Nuevo** — estado de carga de la ruta |
+| `src/app/Dashboard/page.tsx` | Sin cabecera duplicada, métricas con iconos, tarjetas con `StatusBadge`/`PriorityBadge`, estados vacíos, `documentCount` real (`prisma.document.count()`) y `Promise.all` |
+| `src/app/Dashboard/ChatSidebar.tsx` | Tokens semánticos, burbujas con avatar, skeleton de escritura, estado *Buscando/Escribiendo/Listo* y `<form>` para enviar con Enter |
+| `src/app/login/page.tsx`, `LoginForm.tsx` | **Nuevos** — página y formulario de acceso |
+| `src/lib/login-schema.ts` | **Nuevo** — esquema Zod + `validateLoginForm()` sin lanzar |
+| `src/app/page.tsx` | Portada rediseñada (hero con `text-gradient`, 3 tarjetas, accesos) |
+| `src/components/features/CreateTaskForm.tsx` | Tokens semánticos + modal desplazable |
+| `src/lib/auth-action.ts` | Clases de los tres estados del botón de sesión |
+| `src/lib/auth-config.ts` | `pages: { signIn: '/login' }` |
+| `src/app/__tests__/app.test.tsx` | +3 tests (metadata y ruta de login) |
+| `src/lib/__tests__/auth-config.test.ts` | Test de `pages.signIn` reformulado |
+| `src/components/ui/__tests__/ui.test.tsx` | **Nuevo** — 8 tests del sistema de diseño |
+| `src/lib/__tests__/login-schema.test.ts` | **Nuevo** — 8 tests de validación |
+
+### 8. Decisiones técnicas
+
+| Decisión | Por qué |
+|---|---|
+| Cablear Tailwind **antes** de nada | Sin CSS compilado, el resto de la fase no habría tenido ningún efecto visible |
+| Variables RGB con `<alpha-value>` y no `dark:` por componente | 13 tokens cambian de tema; con `dark:` habría que duplicar cada clase de cada componente |
+| `darkMode: 'class'` y no `prefers-color-scheme` | Requisito de alternar en caliente y persistir la elección |
+| Fuentes del sistema, sin `next/font` | Cero dependencias y sin riesgo de fallo de build si Google Fonts no responde durante la compilación |
+| `pages.signIn = '/login'` | Era la ruta que ya dejaba prevista el comentario de `auth-config.ts`; corta y sin segmentos anidados |
+| `signIn(..., { redirect: false })` | El error de credenciales se pinta en el formulario, no en una página aparte |
+| Lógica de validación en `src/lib/` y no en el componente | Patrón del repo: sin testing library se prueba llamando al módulo en entorno `node` |
+| **Sin dependencias nuevas** | `lucide-react` ya estaba instalado (y sin usar) y aporta todos los iconos |
+| Un único `.css`, todo con `@apply` | AGENT.md §5 prohíbe CSS a mano: gradientes y skeleton se componen con utilities, y los `keyframes` van en `theme.extend.keyframes` |
+| Mantener `mock` de demostración en el Dashboard | No rompe el flujo existente cuando Neon no está accesible |
+
+### 9. Verificaciones
+
+| Verificación | Resultado |
+|---|---|
+| `npm run type-check` | ✅ 0 errores |
+| `npm run lint` | ✅ 0 errores |
+| `npm test` | ✅ **156 tests** (15 archivos), 17 nuevos |
+| `npm run build` | ✅ nuevas rutas `/login` y `/Dashboard` con `loading.tsx` |
+| CSS compilado | ✅ **22.232 bytes** (antes **0**) con tokens, `.dark`, `.skeleton` y `.gradient-brand` |
+| HTML prerenderizado de `/login` | ✅ formulario con `login-email`, `login-password`, `aria-busy` y panel de marca |
+| `grep` de colores crudos en `src/` | ✅ **0** coincidencias de `slate-*`, `indigo-*`, `red-*` |
+| AGENT.md §5 (sin CSS a mano) | ✅ `globals.css` es el único `.css` y solo contiene `@tailwind`, variables de tema y bloques con `@apply` |
+
+### 10. Pendientes tras la Fase 8
+
+| # | Tarea | Motivo |
+|---|---|---|
+| 1 | Formulario de creación de proyectos | El botón existe pero está `disabled`; el endpoint `POST /api/projects` ya soporta alta (Fase 6) |
+| 2 | Botón de re-indexado en la UI | El endpoint `POST /api/projects/[id]/reindex` está probado pero no tiene lanzador (pendiente nº 3 de la Fase 7) |
+| 3 | Contraste AA verificado en herramienta como Lighthouse | Se han usado pares `ink`/`canvas` con ~15:1, pero falta la medición formal |
+| 4 | Tests de interacción del formulario de login | No hay testing library instalada; la lógica está cubierta vía `login-schema.test.ts` |
+
+### 💡 Conceptos introducidos en esta fase
+
+| Concepto | Dónde |
+|---|---|
+| **PostCSS + Tailwind** | `postcss.config.mjs`, `tailwind.config.js` |
+| **Design tokens en CSS variables** con `<alpha-value>` | `globals.css` + `tailwind.config.js` |
+| **`darkMode: 'class'`** y anti-FOUC con script inline | `layout.tsx` |
+| **`loading.tsx`** de App Router (carga con `Suspense` implícito) | `src/app/Dashboard/loading.tsx` |
+| **`pages.signIn`** de Auth.js | `src/lib/auth-config.ts` |
+| **Skeleton / shimmer** como componente reutilizable | `src/components/ui/Skeleton.tsx` |
+| **Server Component + Client Component** separados para poder exportar `metadata` | `src/app/login/` |
