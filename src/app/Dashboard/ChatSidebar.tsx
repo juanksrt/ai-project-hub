@@ -1,9 +1,11 @@
 'use client';
 
+import { Bot, Send } from 'lucide-react';
 import React, { useCallback, useState } from 'react';
 
 import type { ChatRequestInput } from '@/lib/chat-schema';
 import { readRagMeta, type RagResponseMeta, type RagSource } from '@/lib/rag-contract';
+import { Skeleton } from '@/components/ui/Skeleton';
 
 /** Mensaje renderizado en la ventana de chat. */
 interface ChatMessage {
@@ -74,9 +76,13 @@ function removeEmptyAssistantMessages(messages: ChatMessage[]): ChatMessage[] {
  *
  * Envia la pregunta a `POST /api/chat`, lee la respuesta en streaming
  * (`response.body.getReader()`) para pintarla en tiempo real y muestra:
- * - estado de carga (busqueda vectorial) y de escritura (primer chunk),
+ * - estado de carga (busqueda vectorial) con un esqueleto, y de escritura
+ *   (primer chunk),
  * - estado de error con boton de reintento,
  * - las fuentes citadas en las cabeceras `X-RAG-Sources`.
+ *
+ * En movil ocupa un bloque de ~70vh bajo el contenido; en escritorio pasa a
+ * ser una columna fija de 640px gracias a `lg:h-[640px]`.
  *
  * @param props - `projectId` opcional para acotar la busqueda al proyecto.
  */
@@ -181,89 +187,140 @@ export default function ChatSidebar({ projectId }: ChatSidebarProps) {
     (message) => message.role === 'user' || message.content.trim() !== '',
   );
 
+  const statusLabel = isLoading ? (hasStreamed ? 'Escribiendo' : 'Buscando') : 'Listo';
+
   return (
-    <aside className="p-5 rounded-xl bg-slate-900 border border-slate-800 flex flex-col h-[600px]">
-      <div className="flex items-center justify-between pb-4 border-b border-slate-800">
-        <div className="flex items-center space-x-2">
-          <span className="w-2.5 h-2.5 rounded-full bg-indigo-500 animate-pulse" />
-          <h2 className="font-semibold text-sm">Asistente RAG del Proyecto</h2>
+    <aside
+      aria-label="Asistente RAG"
+      className="flex h-[70vh] min-h-[420px] flex-col rounded-2xl border border-line bg-surface p-5 shadow-card lg:h-[640px]"
+    >
+      <div className="flex items-center justify-between border-b border-line pb-4">
+        <div className="flex min-w-0 items-center gap-2.5">
+          <span
+            aria-hidden="true"
+            className="gradient-brand flex h-8 w-8 shrink-0 items-center justify-center rounded-xl text-white shadow-card"
+          >
+            <Bot className="h-4 w-4" />
+          </span>
+          <div className="min-w-0">
+            <h2 className="truncate text-sm font-semibold tracking-tight">Asistente RAG</h2>
+            <p className="truncate text-xs text-muted">Gemini sobre PostgreSQL + pgvector</p>
+          </div>
         </div>
-        <span className="text-[10px] uppercase tracking-wide text-slate-500">
-          {isLoading ? (hasStreamed ? 'Escribiendo' : 'Buscando') : 'Listo'}
+
+        <span
+          className={`inline-flex shrink-0 items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-medium ring-1 ring-inset ${
+            isLoading
+              ? 'bg-accent-soft text-accent ring-accent/20'
+              : 'bg-raised text-muted ring-line-strong/40'
+          }`}
+        >
+          <span
+            aria-hidden="true"
+            className={`h-1.5 w-1.5 rounded-full ${isLoading ? 'animate-pulse bg-accent' : 'bg-ok'}`}
+          />
+          {statusLabel}
         </span>
       </div>
 
       {/* Ventana de Chat */}
       <div
-        className="flex-1 my-4 space-y-3 overflow-y-auto text-xs text-slate-300 pr-1"
+        className="my-4 flex-1 space-y-3 overflow-y-auto overscroll-contain pr-1"
         aria-live="polite"
       >
-        {visibleMessages.map((msg, index) => (
-          <div
-            key={`${msg.role}-${index}`}
-            className={
-              msg.role === 'user'
-                ? 'bg-indigo-950/60 border border-indigo-900/50 p-3 rounded-lg ml-4'
-                : 'bg-slate-800/60 p-3 rounded-lg'
-            }
-          >
-            <p
-              className={`font-semibold mb-1 ${
-                msg.role === 'user' ? 'text-slate-300' : 'text-indigo-400'
-              }`}
-            >
-              {msg.role === 'user' ? 'Tú:' : 'IA Bot:'}
-            </p>
-            <p className="whitespace-pre-wrap">{msg.content}</p>
+        {visibleMessages.map((msg, index) => {
+          const isUser = msg.role === 'user';
 
-            {msg.mode === 'context' && (
-              <p className="mt-2 text-amber-400/90 border-t border-slate-700 pt-2">
-                Modo contexto: no hay clave de IA configurada en el servidor, así que muestro el
-                material indexado en lugar de una respuesta redactada.
-              </p>
-            )}
+          return (
+            <div key={`${msg.role}-${index}`} className={`flex items-start gap-2.5 ${isUser ? 'flex-row-reverse' : ''}`}>
+              {!isUser && (
+                <span
+                  aria-hidden="true"
+                  className="gradient-brand flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-white shadow-card"
+                >
+                  <Bot className="h-3.5 w-3.5" />
+                </span>
+              )}
 
-            {msg.sources && msg.sources.length > 0 && (
-              <div className="mt-2 flex flex-wrap gap-1.5 border-t border-slate-700 pt-2">
-                <span className="text-slate-500">Fuentes:</span>
-                {msg.sources.map((source) => (
-                  <span
-                    key={`${source.type}-${source.id}`}
-                    title={
-                      typeof source.score === 'number'
-                        ? `Similitud: ${Math.round(source.score * 100)}%`
-                        : source.type
-                    }
-                    className="px-2 py-0.5 rounded-full bg-indigo-950/70 border border-indigo-900 text-indigo-300"
-                  >
-                    {source.title}
-                    {typeof source.score === 'number'
-                      ? ` · ${Math.round(source.score * 100)}%`
-                      : ''}
-                  </span>
-                ))}
+              <div
+                className={
+                  isUser
+                    ? 'max-w-[85%] rounded-2xl rounded-tr-md bg-accent px-3.5 py-2.5 text-white shadow-card'
+                    : 'max-w-[90%] rounded-2xl rounded-tl-md border border-line bg-raised px-3.5 py-2.5'
+                }
+              >
+                <p
+                  className={`mb-1 text-[11px] font-semibold uppercase tracking-wide ${
+                    isUser ? 'text-white/70' : 'text-accent'
+                  }`}
+                >
+                  {isUser ? 'Tú' : 'Asistente'}
+                </p>
+                <p className="whitespace-pre-wrap text-xs leading-relaxed">{msg.content}</p>
+
+                {msg.mode === 'context' && (
+                  <p className="mt-2 border-t border-line pt-2 text-warn">
+                    Modo contexto: no hay clave de IA configurada en el servidor, así que muestro el
+                    material indexado en lugar de una respuesta redactada.
+                  </p>
+                )}
+
+                {msg.sources && msg.sources.length > 0 && (
+                  <div className="mt-2 flex flex-wrap gap-1.5 border-t border-line pt-2">
+                    <span className="text-[11px] text-muted">Fuentes:</span>
+                    {msg.sources.map((source) => (
+                      <span
+                        key={`${source.type}-${source.id}`}
+                        title={
+                          typeof source.score === 'number'
+                            ? `Similitud: ${Math.round(source.score * 100)}%`
+                            : source.type
+                        }
+                        className="inline-flex items-center rounded-full bg-accent-soft px-2 py-0.5 text-[11px] font-medium text-accent ring-1 ring-inset ring-accent/20"
+                      >
+                        {source.title}
+                        {typeof source.score === 'number'
+                          ? ` · ${Math.round(source.score * 100)}%`
+                          : ''}
+                      </span>
+                    ))}
+                  </div>
+                )}
               </div>
-            )}
-          </div>
-        ))}
+            </div>
+          );
+        })}
 
+        {/* Busqueda vectorial: esqueleto mientras no llega el primer chunk */}
         {isLoading && !hasStreamed && (
-          <div className="bg-slate-800/60 p-3 rounded-lg">
-            <p className="font-semibold text-indigo-400 mb-1">IA Bot:</p>
-            Buscando fuentes similares en PostgreSQL...
+          <div className="flex items-start gap-2.5">
+            <span
+              aria-hidden="true"
+              className="gradient-brand flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-white shadow-card"
+            >
+              <Bot className="h-3.5 w-3.5" />
+            </span>
+            <div className="w-full space-y-2 rounded-2xl rounded-tl-md border border-line bg-raised px-3.5 py-2.5">
+              <Skeleton className="h-3 w-11/12 rounded-md" />
+              <Skeleton className="h-3 w-4/5 rounded-md" />
+              <Skeleton className="h-3 w-2/3 rounded-md" />
+              <p className="pt-1 text-[11px] text-muted">
+                Buscando fuentes similares en PostgreSQL…
+              </p>
+            </div>
           </div>
         )}
       </div>
 
       {/* Error y reintento */}
       {error && (
-        <div className="mb-3 flex items-start justify-between gap-3 p-3 rounded-lg bg-red-950/60 border border-red-900">
-          <p className="text-xs text-red-300">{error}</p>
+        <div className="mb-3 flex items-start justify-between gap-3 rounded-xl border border-danger/30 bg-danger/10 p-3">
+          <p className="text-xs text-danger">{error}</p>
           <button
             type="button"
             onClick={handleRetry}
             disabled={isLoading}
-            className="shrink-0 bg-red-900 hover:bg-red-800 disabled:opacity-50 text-white px-3 py-1.5 rounded-lg text-xs font-medium transition"
+            className="shrink-0 rounded-lg bg-danger px-3 py-1.5 text-xs font-medium text-white transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
           >
             Reintentar
           </button>
@@ -271,29 +328,33 @@ export default function ChatSidebar({ projectId }: ChatSidebarProps) {
       )}
 
       {/* Input del Chat */}
-      <div className="pt-2 border-t border-slate-800">
-        <div className="flex space-x-2">
+      <div className="border-t border-line pt-4">
+        <form
+          onSubmit={(event) => {
+            event.preventDefault();
+            handleSend();
+          }}
+          className="flex gap-2"
+        >
           <input
             type="text"
             value={input}
             onChange={(e) => setInput(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') handleSend();
-            }}
             disabled={isLoading}
-            placeholder="Pregunta a la IA sobre la doc..."
+            placeholder="Pregúntale al asistente…"
             aria-label="Pregunta para el asistente RAG"
-            className="flex-1 bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-indigo-500 disabled:opacity-60"
+            className="min-w-0 flex-1 rounded-xl border border-line bg-canvas px-3.5 py-2.5 text-xs text-ink placeholder:text-muted focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/25 disabled:opacity-60"
           />
           <button
-            type="button"
-            onClick={handleSend}
+            type="submit"
             disabled={isLoading || input.trim() === ''}
-            className="bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white px-3 py-2 rounded-lg text-xs font-medium transition"
+            aria-label="Enviar pregunta"
+            className="inline-flex shrink-0 items-center gap-1.5 rounded-xl bg-accent px-3.5 py-2.5 text-xs font-medium text-white shadow-card transition hover:bg-accent-strong disabled:cursor-not-allowed disabled:opacity-50"
           >
-            {isLoading ? 'Pensando...' : 'Enviar'}
+            <Send className="h-3.5 w-3.5" aria-hidden="true" />
+            <span className="hidden sm:inline">{isLoading ? 'Pensando…' : 'Enviar'}</span>
           </button>
-        </div>
+        </form>
       </div>
     </aside>
   );

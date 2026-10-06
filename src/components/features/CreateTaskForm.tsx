@@ -162,10 +162,10 @@ export default function CreateTaskForm({ projects }: CreateTaskFormProps) {
   };
 
   const inputClasses = (field: string): string =>
-    `w-full rounded-lg border bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-600 outline-none transition focus:ring-2 ${
+    `w-full rounded-xl border bg-canvas px-3 py-2.5 text-sm text-ink placeholder:text-muted outline-none transition focus:ring-2 ${
       errorFor(field)
-        ? 'border-red-700 focus:ring-red-900'
-        : 'border-slate-700 focus:border-indigo-500 focus:ring-indigo-950'
+        ? 'border-danger focus:ring-danger/25'
+        : 'border-line focus:border-accent focus:ring-accent/25'
     }`;
 
   return (
@@ -173,7 +173,7 @@ export default function CreateTaskForm({ projects }: CreateTaskFormProps) {
       <button
         type="button"
         onClick={openModal}
-        className="rounded-lg bg-indigo-600 px-3 py-1.5 text-sm font-medium text-white transition hover:bg-indigo-500"
+        className="inline-flex items-center gap-1.5 rounded-xl bg-accent px-3.5 py-2 text-sm font-medium text-white shadow-card transition hover:bg-accent-strong"
       >
         + Nueva Tarea
       </button>
@@ -192,14 +192,14 @@ export default function CreateTaskForm({ projects }: CreateTaskFormProps) {
             role="dialog"
             aria-modal="true"
             aria-labelledby="create-task-heading"
-            className="relative w-full max-w-lg rounded-xl border border-slate-800 bg-slate-900 p-6 shadow-2xl"
+            className="relative max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-2xl border border-line bg-surface p-6 shadow-lift"
           >
             <div className="mb-5 flex items-start justify-between">
               <div>
-                <h2 id="create-task-heading" className="text-lg font-semibold text-white">
+                <h2 id="create-task-heading" className="text-lg font-semibold text-ink">
                   Nueva Tarea
                 </h2>
-                <p className="mt-1 text-sm text-slate-400">
+                <p className="mt-1 text-sm text-muted">
                   Se asignara a tu usuario activo.
                 </p>
               </div>
@@ -207,7 +207,7 @@ export default function CreateTaskForm({ projects }: CreateTaskFormProps) {
                 type="button"
                 onClick={closeModal}
                 aria-label="Cerrar"
-                className="rounded-lg px-2 py-1 text-slate-400 transition hover:bg-slate-800 hover:text-slate-200"
+                className="rounded-lg px-2 py-1 text-muted transition hover:bg-raised hover:text-ink"
               >
                 ✕
               </button>
@@ -216,7 +216,7 @@ export default function CreateTaskForm({ projects }: CreateTaskFormProps) {
             <form onSubmit={handleSubmit} className="space-y-4" noValidate>
               {/* Titulo */}
               <div>
-                <label htmlFor="task-title" className="mb-1.5 block text-sm font-medium text-slate-300">
+                <label htmlFor="task-title" className="mb-1.5 block text-sm font-medium text-ink">
                   Título *
                 </label>
                 <input
@@ -232,7 +232,7 @@ export default function CreateTaskForm({ projects }: CreateTaskFormProps) {
                   className={inputClasses('title')}
                 />
                 {errorFor('title') && (
-                  <p className="mt-1 text-xs text-red-400">{errorFor('title')}</p>
+                  <p className="mt-1 text-xs text-danger">{errorFor('title')}</p>
                 )}
               </div>
 
@@ -240,7 +240,7 @@ export default function CreateTaskForm({ projects }: CreateTaskFormProps) {
               <div>
                 <label
                   htmlFor="task-description"
-                  className="mb-1.5 block text-sm font-medium text-slate-300"
+                  className="mb-1.5 block text-sm font-medium text-ink"
                 >
                   Descripción
                 </label>
@@ -256,14 +256,14 @@ export default function CreateTaskForm({ projects }: CreateTaskFormProps) {
                   className={`${inputClasses('description')} resize-y`}
                 />
                 {errorFor('description') && (
-                  <p className="mt-1 text-xs text-red-400">{errorFor('description')}</p>
+                  <p className="mt-1 text-xs text-danger">{errorFor('description')}</p>
                 )}
               </div>
 
               {/* Estado y prioridad */}
               <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                 <div>
-                  <label htmlFor="task-status" className="mb-1.5 block text-sm font-medium text-slate-300">
+                  <label htmlFor="task-status" className="mb-1.5 block text-sm font-medium text-ink">
                     Estado
                   </label>
                   <select
@@ -281,12 +281,12 @@ export default function CreateTaskForm({ projects }: CreateTaskFormProps) {
                     ))}
                   </select>
                   {errorFor('status') && (
-                    <p className="mt-1 text-xs text-red-400">{errorFor('status')}</p>
+                    <p className="mt-1 text-xs text-danger">{errorFor('status')}</p>
                   )}
                 </div>
 
                 <div>
-                  <label htmlFor="task-priority" className="mb-1.5 block text-sm font-medium text-slate-300">
+                  <label htmlFor="task-priority" className="mb-1.5 block text-sm font-medium text-ink">
                     Prioridad
                   </label>
                   <select
@@ -304,14 +304,14 @@ export default function CreateTaskForm({ projects }: CreateTaskFormProps) {
                     ))}
                   </select>
                   {errorFor('priority') && (
-                    <p className="mt-1 text-xs text-red-400">{errorFor('priority')}</p>
+                    <p className="mt-1 text-xs text-danger">{errorFor('priority')}</p>
                   )}
                 </div>
               </div>
 
               {/* Proyecto */}
               <div>
-                <label htmlFor="task-project" className="mb-1.5 block text-sm font-medium text-slate-300">
+                <label htmlFor="task-project" className="mb-1.5 block text-sm font-medium text-ink">
                   Proyecto *
                 </label>
                 <select
@@ -333,13 +333,13 @@ export default function CreateTaskForm({ projects }: CreateTaskFormProps) {
                   ))}
                 </select>
                 {errorFor('projectId') && (
-                  <p className="mt-1 text-xs text-red-400">{errorFor('projectId')}</p>
+                  <p className="mt-1 text-xs text-danger">{errorFor('projectId')}</p>
                 )}
               </div>
 
               {/* Error general del servidor */}
               {formError && (
-                <p className="rounded-lg border border-red-900 bg-red-950 px-3 py-2 text-sm text-red-300">
+                <p className="rounded-xl border border-danger/30 bg-danger/10 px-3 py-2 text-sm text-danger">
                   {formError}
                 </p>
               )}
@@ -348,14 +348,14 @@ export default function CreateTaskForm({ projects }: CreateTaskFormProps) {
                 <button
                   type="button"
                   onClick={closeModal}
-                  className="rounded-lg border border-slate-700 bg-slate-800 px-4 py-2 text-sm font-medium text-slate-100 transition hover:bg-slate-700"
+                  className="rounded-xl border border-line-strong bg-surface px-4 py-2 text-sm font-medium text-ink shadow-card transition hover:bg-raised"
                 >
                   Cancelar
                 </button>
                 <button
                   type="submit"
                   disabled={isSubmitting}
-                  className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-indigo-500 disabled:cursor-not-allowed disabled:opacity-60"
+                  className="rounded-xl bg-accent px-4 py-2 text-sm font-medium text-white shadow-card transition hover:bg-accent-strong disabled:cursor-not-allowed disabled:opacity-60"
                 >
                   {isSubmitting ? 'Creando...' : 'Crear tarea'}
                 </button>
