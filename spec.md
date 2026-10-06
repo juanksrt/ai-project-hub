@@ -79,6 +79,12 @@ Plataforma web SaaS de gestión de proyectos y tareas con un **asistente RAG int
 - **Indexación en escritura**: `POST /api/tasks`, `POST /api/projects` y
   `PATCH /api/projects/[id]` generan el embedding al crear/actualizar y
   responden `indexed: boolean`.
+- **Re-indexado en lote**: `POST /api/projects/[id]/reindex` vuelve a generar
+  los embeddings del proyecto y de todas sus tareas con el modelo actual
+  (sesión obligatoria, solo propietario o `ADMIN`), y antes **purga los
+  vectores huérfanos** (`deleteOrphanEmbeddings()`: vectores cuya tarea o
+  proyecto ya no existe). El upsert `ON CONFLICT` hace la operación
+  idempotente; responde `{ result: ReindexResult }` con los contadores.
 - **`POST /api/chat`**: exige sesión (`auth()` → `401` sin sesión), valida con
   `chatRequestSchema` (Zod), embede la última pregunta, busca por coseno (con
   respaldo léxico si falta `GOOGLE_GENERATIVE_AI_API_KEY`), anade los `DocumentChunk` del
@@ -91,9 +97,9 @@ Plataforma web SaaS de gestión de proyectos y tareas con un **asistente RAG int
   de escritura, error con *Reintentar* y las fuentes citadas con su score.
 - **Variables**: `GOOGLE_GENERATIVE_AI_API_KEY` es opcional: sin ella el chat responde en
   modo `context` (contexto recuperado + fuentes) en vez de fallar.
-- **Tests**: `src/lib/__tests__/embeddings.test.ts` (24),
+- **Tests**: `src/lib/__tests__/embeddings.test.ts` (32),
   `src/app/api/chat/__tests__/chat-route.test.ts` (10),
-  `src/app/api/projects/__tests__/projects-route.test.ts` (12) y
+  `src/app/api/projects/__tests__/projects-route.test.ts` (18) y
   `src/lib/__tests__/embeddings-e2e.test.ts` (3, integración con Neon: se
   ejecutan solo si existe `DATABASE_URL` y validan el cast a `vector`, el
   `ON CONFLICT` y el operador coseno contra la base de datos real).

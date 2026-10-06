@@ -831,19 +831,55 @@ que la integración sea **100 % gratuita**.
 | El test E2E no se toca | Usa `EMBEDDING_DIMENSIONS`, así que se adapta solo |
 | `schema.prisma` solo cambia un comentario | El dato de la dimensión vive en el código, no en el modelo |
 
-### 3. Cambios por archivo
+### 3. `reindexProject` y purga de huérfanos
+
+La tabla `Embedding` estaba **vacía**: nunca hubo `OPENAI_API_KEY` en local,
+así que `indexProject`/`indexTask` devolvieron siempre `indexed: false` y no
+existía ni un vector que borrar de OpenAI. El riesgo real eran los
+**vectores huérfanos**: no había ningún `DELETE` de proyectos o tareas que
+limpiara sus embeddings.
+
+- **`deleteOrphanEmbeddings(projectId?)`** — borra los vectores cuya entidad
+  ya no existe (proyecto o tarea). Con `projectId` se acota al proyecto que se
+  está re-indexando, así que aprovecha `@@index([projectId])` y no toca datos
+  de otros usuarios.
+- **`reindexProject(projectId)`** — purga → lee el proyecto y sus tareas →
+  re-genera cada embedding. El upsert `ON CONFLICT` lo hace **idempotente**.
+  Devuelve `ReindexResult` con contadores: a diferencia de `indexEntity()`,
+  aquí los fallos del proveedor **no se ocultan**, porque quien pide un
+  re-indexado necesita saber si algo falló.
+- **`POST /api/projects/[id]/reindex`** — mismo esquema de autorización que
+  el `PATCH`: sesión obligatoria (401), proyecto inexistente (404) y solo
+  propietario o `ADMIN` (403).
+
+**Ejecución real contra Neon (2 proyectos + 4 tareas):**
+
+| Métrica | Valor |
+|---|---|
+| Vectores al empezar | **0** |
+| Vectores al terminar | **6** |
+| Proyectos re-indexados | 2 / 2 ✅ |
+| Tareas re-indexadas | 4 / 4 ✅ |
+| Huérfanos eliminados | 0 |
+| Prueba: *"como funciona el chatbot RAG?"* | `Chatbot RAG interno` → **0.8035** |
+
+Cierra el pendiente nº 2 de la Fase 6 (*"Re-indexación en lote"*).
+
+### 4. Cambios por archivo
 
 | Archivo | Cambio |
 |---|---|
 | `package.json` | `+ @ai-sdk/google@4.0.88`, `− @ai-sdk/openai` (quedó sin uso) |
-| `src/lib/embeddings.ts` | `google.embeddingModel('gemini-embedding-2')` + `providerOptions: { google: { outputDimensionality: 1536 } }`; `hasOpenAiCredentials` → `hasGoogleCredentials`; `OPENAI_CREDENTIAL_ENV` → `GOOGLE_CREDENTIAL_ENV = 'GOOGLE_GENERATIVE_AI_API_KEY'` |
+| `src/lib/embeddings.ts` | `google.embeddingModel('gemini-embedding-2')` + `providerOptions: { google: { outputDimensionality: 1536 } }`; `hasOpenAiCredentials` → `hasGoogleCredentials`; `OPENAI_CREDENTIAL_ENV` → `GOOGLE_CREDENTIAL_ENV = 'GOOGLE_GENERATIVE_AI_API_KEY'`; **nuevos** `reindexProject()` y `deleteOrphanEmbeddings()` |
 | `src/app/api/chat/route.ts` | `CHAT_MODEL_ID = 'gemini-3.6-flash'` y `google(CHAT_MODEL_ID)` en `streamText` |
-| `src/lib/__tests__/embeddings.test.ts` | Mock de `@ai-sdk/google`, y nuevo caso que fija `outputDimensionality: 1536` |
+| `src/app/api/projects/[id]/reindex/route.ts` | **Nuevo** endpoint `POST` de re-indexado |
+| `src/lib/__tests__/embeddings.test.ts` | Mock de `@ai-sdk/google`, caso que fija `outputDimensionality: 1536` y **+8 tests** (purga y re-indexado) |
 | `src/app/api/chat/__tests__/chat-route.test.ts` | Mock del provider callable y del fallback `context` |
+| `src/app/api/projects/__tests__/projects-route.test.ts` | **+6 tests** del endpoint de re-indexado |
 | `.env.example` | `OPENAI_API_KEY` → `GOOGLE_GENERATIVE_AI_API_KEY` con enlace a AI Studio |
 | `spec.md`, `prisma/schema.prisma` (comentario) | Documentación del módulo IA & RAG |
 
-### 4. Decisiones técnicas
+### 5. Decisiones técnicas
 
 | Decisión | Por qué |
 |---|---|
@@ -851,23 +887,27 @@ que la integración sea **100 % gratuita**.
 | `GOOGLE_GENERATIVE_AI_API_KEY` como credencial | Es la variable que el provider lee **por defecto**: `createGoogle({ apiKey })` no hace falta en ninguna parte |
 | `@ai-sdk/google@4.0.88` y no otra línea | Misma línea major que el `@ai-sdk/openai@4.0.84` que se quitó: peer `zod ^4.1.8` y `ProviderV4`, compatible con `ai@7.0.128` sin tocar el SDK |
 | El degradado sin clave se conserva igual | Sin `GOOGLE_GENERATIVE_AI_API_KEY`, `/api/chat` sigue respondiendo en modo `context` (léxico + fuentes) en vez de 500 |
+| Purgar **antes** de re-generar | Los vectores de entidades ya borradas no se sobrescriben (nadie los toca), así que se limpian primero; después el `ON CONFLICT` reemplaza los que sí tienen entidad viva |
+| `$executeRaw` parametrizado en la purga | Nada de `$executeRawUnsafe`: el `projectId` viaja como `$1`, sin concatenar SQL |
 | Scope acotado a la migración | Los prefijos de *task type* que Google recomienda para `gemini-embedding-2` (`task: search result \| query: ...`) se dejan como pendiente para no mezclar un cambio de calidad con uno de proveedor |
 
-### 5. Verificaciones
+### 6. Verificaciones
 
 | Verificación | Resultado |
 |---|---|
 | `npm run type-check` | ✅ 0 errores |
 | `npm run lint` | ✅ 0 errores |
-| `npm test` | ✅ **125 tests** (13 archivos) |
-| `npm run build` | ✅ rutas `/api/chat`, `/api/projects`, `/api/projects/[id]` y `/api/tasks` registradas |
+| `npm test` | ✅ **139 tests** (13 archivos), 14 nuevos |
+| `npm run build` | ✅ rutas `/api/chat`, `/api/projects`, `/api/projects/[id]`, `/api/projects/[id]/reindex` y `/api/tasks` registradas |
 | E2E `embeddings-e2e.test.ts` | ✅ 3 tests contra Neon (cast a `vector`, `ON CONFLICT`, coseno, `ILIKE`, `DELETE`) |
+| SQL de la purga contra Postgres real | ✅ sentencias con alcance y global ejecutadas en Neon |
+| Re-indexado real con Gemini | ✅ 6 vectores generados y recuperación coseno 0.8035 |
 
-### 6. Pendientes tras la Fase 7
+### 7. Pendientes tras la Fase 7
 
 | # | Tarea | Motivo |
 |---|---|---|
-| 1 | **Re-indexar los embeddings existentes** | Los vectores actuales vienen de `text-embedding-3-small`: caben en `vector(1536)`, pero viven en un **espacio semántico distinto** al de Gemini, así que la recuperación será mala hasta re-generarlos (sigue pendiente el `reindexProject` en lote de la Fase 6) |
-| 2 | Prefijos de *task type* en `generateEmbedding` | Google recomienda `task: search result \| query:` / `title: ... \| text:` para RAG asimétrico con `gemini-embedding-2` |
-| 3 | Clave real en `.env.local` y en Vercel | La migración deja el código listo; sin `GOOGLE_GENERATIVE_AI_API_KEY` el chat opera en modo `context` |
+| 1 | Prefijos de *task type* en `generateEmbedding` | Google recomienda `task: search result \| query:` / `title: ... \| text:` para RAG asimétrico con `gemini-embedding-2` |
+| 2 | Clave en **Vercel** | Ya está en `.env.local` (local); falta añadir `GOOGLE_GENERATIVE_AI_API_KEY` en las variables de entorno del despliegue |
+| 3 | Botón de re-indexado en el Dashboard | El endpoint existe y está probado, pero no hay UI que lo lance |
 | 4 | Pendientes de la Fase 6 no abordados aquí | Embeddings de `DocumentChunk`, botón *+ Nuevo Proyecto*, scoping por usuario |
