@@ -119,6 +119,41 @@ model Task {
   updatedAt   DateTime     @updatedAt
 }
 
+// Tipos de entidad que pueden tener embedding vectorial.
+enum EmbeddingEntityType {
+  PROJECT
+  TASK
+}
+
+// Embeddings de Project y Task para la busqueda por similitud (RAG).
+//
+// Nota sobre `Unsupported("vector(1536)")`: Prisma 5 no expone un tipo `vector`
+// nativo, por lo que la columna se declara como tipo nativo no soportado. Eso
+// significa que Prisma Client NUNCA lee ni escribe esta columna: todo acceso al
+// vector se hace con SQL crudo parametrizado (`$queryRaw` / `$executeRaw`).
+// Ver src/lib/embeddings.ts. La dimension (1536) coincide con
+// text-embedding-3-small.
+model Embedding {
+  id         String              @id @default(cuid())
+  entityType EmbeddingEntityType
+  // Id de Project o Task al que pertenece este embedding.
+  entityId   String
+  // Denormalizado para poder filtrar la busqueda coseno por proyecto.
+  projectId  String
+  // Titulo legible para citar la fuente en la respuesta del asistente.
+  title      String
+  // Texto original que se embeddio (para trazabilidad y re-indexacion).
+  content    String              @db.Text
+  embedding  Unsupported("vector(1536)")?
+  createdAt  DateTime            @default(now())
+  updatedAt  DateTime            @updatedAt
+
+  // Un solo embedding por entidad: se actualiza con ON CONFLICT en el upsert.
+  @@unique([entityType, entityId])
+  @@index([entityType, projectId])
+  @@index([projectId])
+}
+
 model Document {
   id        String   @id @default(cuid())
   title     String
