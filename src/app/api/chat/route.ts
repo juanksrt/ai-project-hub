@@ -1,4 +1,4 @@
-import { openai } from '@ai-sdk/openai';
+import { google } from '@ai-sdk/google';
 import { createTextStreamResponse, streamText } from 'ai';
 import { NextResponse } from 'next/server';
 
@@ -7,7 +7,7 @@ import { chatRequestSchema } from '@/lib/chat-schema';
 import {
   DEFAULT_TOP_K,
   EmbeddingUnavailableError,
-  hasOpenAiCredentials,
+  hasGoogleCredentials,
   lexicalSearch,
   similaritySearch,
   type SimilarityHit,
@@ -22,8 +22,14 @@ import {
   type RagSource,
 } from '@/lib/rag-contract';
 
-/** Modelo que redacta la respuesta. Requiere `OPENAI_API_KEY`. */
-const CHAT_MODEL_ID = 'gpt-4o-mini';
+/**
+ * Modelo que redacta la respuesta (capa gratuita de Google Gemini).
+ *
+ * Sustituye a `gpt-4o-mini`. `gemini-2.0-flash` fue retirado el 01/06/2026 y
+ * Google apunta a `gemini-3.6-flash` como su sustituto oficial.
+ * Requiere `GOOGLE_GENERATIVE_AI_API_KEY`.
+ */
+const CHAT_MODEL_ID = 'gemini-3.6-flash';
 
 /** Numero maximo de fragmentos de documentos que se anaden al contexto. */
 const DOCUMENT_CHUNK_LIMIT = 3;
@@ -57,8 +63,8 @@ Reglas:
  * 2. El cuerpo se valida con `chatRequestSchema` (Zod) -> 400 si no cumple.
  * 3. La ultima pregunta se embede con el Vercel AI SDK y se busca por
  *    similitud coseno (`<=>`) en la tabla `Embedding` con pgvector. Si falta
- *    `OPENAI_API_KEY` se cae a busqueda lexica (`ILIKE`) para no dejar el
- *    chat muerto; cualquier otro fallo de base de datos -> 500.
+ *    `GOOGLE_GENERATIVE_AI_API_KEY` se cae a busqueda lexica (`ILIKE`) para
+ *    no dejar el chat muerto; cualquier otro fallo de base de datos -> 500.
  * 4. Los fragmentos de `DocumentChunk` del proyecto se anaden al contexto.
  * 5. Con credencial de IA se genera la respuesta con `streamText` y se
  *    devuelve como stream de texto plano; sin ella se devuelve el contexto
@@ -106,7 +112,7 @@ export async function POST(request: Request): Promise<Response> {
     const { hits, retrieval } = await retrieveContext(question, parsed.data.projectId);
     const documents = await findDocumentChunks(parsed.data.projectId);
     const sources = collectSources(hits, documents);
-    const llmEnabled = hasOpenAiCredentials();
+    const llmEnabled = hasGoogleCredentials();
     const headers = buildHeaders(sources, retrieval, llmEnabled ? 'llm' : 'context');
 
     // Sin credencial no hay LLM: se responde con el contexto recuperado para
@@ -116,7 +122,7 @@ export async function POST(request: Request): Promise<Response> {
     }
 
     const result = streamText({
-      model: openai.chat(CHAT_MODEL_ID),
+      model: google(CHAT_MODEL_ID),
       system: buildSystemPrompt(formatContext(hits, documents)),
       messages: parsed.data.messages.map((message) => ({
         role: message.role,
