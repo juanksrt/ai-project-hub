@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 
 import { auth } from '@/auth';
+import { indexTask } from '@/lib/embeddings';
 import { getPrisma } from '@/lib/prisma';
 import { createTaskSchema, toTaskFieldErrors } from '@/lib/task-schema';
 
@@ -15,6 +16,8 @@ interface CreateTaskSuccessResponse {
     projectId: string;
     assigneeId: string | null;
   };
+  /** `true` si el embedding de la tarea quedo guardado en pgvector. */
+  indexed: boolean;
 }
 
 /** Cuerpo de respuesta cuando la peticion es invalida o falla. */
@@ -33,6 +36,8 @@ interface CreateTaskErrorResponse {
  * 3. Se comprueba que el proyecto existe en la base de datos -> 404 si no.
  * 4. Se persiste con Prisma (Neon) usando `session.user.id` como `assigneeId`,
  *    de modo que el cliente jamas puede asignar una tarea a otro usuario.
+ * 5. Se genera el embedding de la tarea con el Vercel AI SDK y se guarda en la
+ *    tabla `Embedding` (pgvector) para la busqueda por similitud del chat.
  *
  * @param request - Peticion con el JSON de la tarea.
  * @returns 201 con la tarea creada, o el error correspondiente.
@@ -108,7 +113,12 @@ export async function POST(
       },
     });
 
-    return NextResponse.json<CreateTaskSuccessResponse>({ task }, { status: 201 });
+    // Indexa la tarea en pgvector para que el asistente RAG pueda encontrarla
+    // por similitud coseno. `indexTask` nunca lanza: si el proveedor de IA
+    // falla, la tarea se crea igualmente y `indexed` informa del fallo.
+    const indexed = await indexTask(task);
+
+    return NextResponse.json<CreateTaskSuccessResponse>({ task, indexed }, { status: 201 });
   } catch (error) {
     console.error('Error en POST /api/tasks:', error);
 
