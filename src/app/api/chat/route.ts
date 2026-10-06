@@ -1,5 +1,6 @@
 import { google } from '@ai-sdk/google';
 import { createTextStreamResponse, streamText } from 'ai';
+import type { Session } from 'next-auth';
 import { NextResponse } from 'next/server';
 
 import { auth } from '@/auth';
@@ -31,6 +32,14 @@ import {
  */
 const CHAT_MODEL_ID = 'gemini-3.6-flash';
 
+/**
+ * Mensaje amigable cuando falla la sesion o la credencial de Gemini.
+ *
+ * Sustituye al generico `Error interno en la API RAG`: la persona necesita
+ * saber si debe volver a entrar o si falta `GOOGLE_GENERATIVE_AI_API_KEY`.
+ */
+const SESSION_OR_KEY_MESSAGE = 'Por favor inicia sesión o verifica la API Key de Gemini';
+
 /** Numero maximo de fragmentos de documentos que se anaden al contexto. */
 const DOCUMENT_CHUNK_LIMIT = 3;
 
@@ -58,8 +67,10 @@ Reglas:
  * `POST /api/chat` — pregunta al asistente RAG del proyecto.
  *
  * Flujo:
- * 1. `auth()` de NextAuth; sin sesion -> 401. El chat devuelve contenido de
- *    proyectos y tareas, asi que no puede ser publico.
+ * 1. `auth()` de NextAuth dentro de su propio `try/catch`; sin sesion o con
+ *    la sesion caida -> 401 (con `SESSION_OR_KEY_MESSAGE` si `auth()` lanza).
+ *    El chat devuelve contenido de proyectos y tareas, asi que no puede ser
+ *    publico.
  * 2. El cuerpo se valida con `chatRequestSchema` (Zod) -> 400 si no cumple.
  * 3. La ultima pregunta se embede con el Vercel AI SDK y se busca por
  *    similitud coseno (`<=>`) en la tabla `Embedding` con pgvector. Si falta
@@ -68,7 +79,8 @@ Reglas:
  * 4. Los fragmentos de `DocumentChunk` del proyecto se anaden al contexto.
  * 5. Con credencial de IA se genera la respuesta con `streamText` y se
  *    devuelve como stream de texto plano; sin ella se devuelve el contexto
- *    recuperado (modo `context`).
+ *    recuperado (modo `context`). Si la generacion lanza, el `try/catch`
+ *    responde `SESSION_OR_KEY_MESSAGE` en lugar del 500 generico.
  * 6. Las fuentes viajan en las cabeceras `X-RAG-*` porque el cuerpo es un
  *    stream: se envian antes de que empiece a generarse la respuesta.
  *
@@ -77,7 +89,21 @@ Reglas:
  */
 export async function POST(request: Request): Promise<Response> {
   try {
-    const session = await auth();
+    // `auth()` dentro de su propio try/catch: si la sesion falla (cookie
+    // corrupta, AUTH_SECRET mal configurado...) se responde 401 con el
+    // mensaje amigable en lugar de un 500 no controlado.
+    let session: Session | null = null;
+
+    try {
+      session = await auth();
+    } catch (error) {
+      console.error('[chat] No se pudo leer la sesión:', error);
+
+      return NextResponse.json<ChatErrorResponse>(
+        { error: SESSION_OR_KEY_MESSAGE },
+        { status: 401 },
+      );
+    }
 
     if (!session?.user?.id) {
       return NextResponse.json<ChatErrorResponse>({ error: 'No autenticado' }, { status: 401 });
@@ -121,27 +147,57 @@ export async function POST(request: Request): Promise<Response> {
       return new Response(buildContextAnswer(question, hits, documents), { status: 200, headers });
     }
 
-    const result = streamText({
-      model: google(CHAT_MODEL_ID),
-      system: buildSystemPrompt(formatContext(hits, documents)),
-      messages: parsed.data.messages.map((message) => ({
-        role: message.role,
-        content: message.content,
-      })),
-      onError: ({ error }) => {
-        console.error('[chat] Fallo al generar la respuesta con el LLM:', error);
-      },
-    });
+    // Un fallo al construir el stream casi siempre viene de la credencial
+    // (GOOGLE_GENERATIVE_AI_API_KEY ausente o rechazada por Gemini): se
+    // contesta con un mensaje accionable en vez de un 500 no controlado.
+    try {
+      const result = streamText({
+        model: google(CHAT_MODEL_ID),
+        system: buildSystemPrompt(formatContext(hits, documents)),
+        messages: parsed.data.messages.map((message) => ({
+          role: message.role,
+          content: message.content,
+        })),
+        onError: ({ error }) => {
+          console.error('[chat] Fallo al generar la respuesta con el LLM:', error);
+        },
+      });
 
-    return createTextStreamResponse({ headers, stream: result.textStream });
+      return createTextStreamResponse({ headers, stream: result.textStream });
+    } catch (error) {
+      console.error('[chat] No se pudo generar la respuesta con Gemini:', error);
+
+      return NextResponse.json<ChatErrorResponse>(
+        { error: SESSION_OR_KEY_MESSAGE },
+        { status: 500 },
+      );
+    }
   } catch (error) {
     console.error('Error en POST /api/chat:', error);
 
     return NextResponse.json<ChatErrorResponse>(
-      { error: 'Error interno en la API RAG' },
+      {
+        error: isCredentialError(error) ? SESSION_OR_KEY_MESSAGE : 'Error interno en la API RAG',
+      },
       { status: 500 },
     );
   }
+}
+
+/**
+ * Detecta si un fallo viene de la sesion o de la credencial de Gemini.
+ *
+ * @param error - Error capturado por el handler.
+ * @returns `true` si apunta a `GOOGLE_GENERATIVE_AI_API_KEY` o al proveedor.
+ */
+function isCredentialError(error: unknown): boolean {
+  if (error instanceof EmbeddingUnavailableError) {
+    return true;
+  }
+
+  const message = error instanceof Error ? error.message : String(error);
+
+  return /GOOGLE_GENERATIVE_AI_API_KEY|api key|credential|gemini/i.test(message);
 }
 
 /**

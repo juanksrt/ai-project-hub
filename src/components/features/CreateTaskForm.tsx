@@ -31,6 +31,11 @@ interface CreateTaskApiError {
   fieldErrors?: TaskFieldErrors;
 }
 
+/** Forma minima del cuerpo de exito (201) que devuelve `POST /api/tasks`. */
+interface CreateTaskSuccessResponse {
+  task: { id: string };
+}
+
 /** Estado inicial del formulario: PENDING + MEDIUM, igual que los defaults de Prisma. */
 const INITIAL_STATUS: TaskStatus = 'PENDING';
 const INITIAL_PRIORITY: TaskPriority = 'MEDIUM';
@@ -53,6 +58,68 @@ const PRIORITY_LABELS: Record<TaskPriority, string> = {
   MEDIUM: 'Media',
   HIGH: 'Alta',
 };
+
+/**
+ * Traduce el status HTTP de `POST /api/tasks` a un mensaje accionable.
+ *
+ * La API devuelve textos tecnicos (`No autenticado`, `Error interno al crear
+ * la tarea`) que en el modal no le dicen nada a la persona usuaria. El 401
+ * siempre se traduce porque exige una accion concreta (volver a entrar); el
+ * resto respeta el mensaje del servidor si lo hay.
+ *
+ * @param status - Codigo HTTP de la respuesta.
+ * @param serverMessage - `error` devuelto por la API, si venia en el cuerpo.
+ * @returns Mensaje listo para pintar dentro del modal.
+ */
+function messageForHttpError(status: number, serverMessage?: string): string {
+  if (status === 401) {
+    return 'Tu sesión no está activa. Inicia sesión de nuevo para crear la tarea.';
+  }
+
+  if (serverMessage) {
+    return serverMessage;
+  }
+
+  if (status >= 500) {
+    return 'El servidor tuvo un problema al crear la tarea. Intenta de nuevo en unos segundos.';
+  }
+
+  return 'No se pudo crear la tarea. Revisa los datos e inténtalo de nuevo.';
+}
+
+/**
+ * Interpreta un cuerpo de error JSON.
+ *
+ * @param payload - Cuerpo leido de la respuesta.
+ * @returns El cuerpo como error, o `null` si no es un objeto JSON.
+ */
+function readApiError(payload: unknown): CreateTaskApiError | null {
+  if (typeof payload !== 'object' || payload === null) {
+    return null;
+  }
+
+  return payload as CreateTaskApiError;
+}
+
+/**
+ * Comprueba que la respuesta confirma la tarea creada.
+ *
+ * Sin esta guarda, un 2xx sin JSON de tarea (p.ej. el HTML que devuelve un
+ * proxy o un error de red disfrazado) cerraria el modal en silencio sin haber
+ * creado nada.
+ *
+ * @param payload - Cuerpo leido de la respuesta.
+ * @returns `true` si el cuerpo trae el `task.id` del 201.
+ */
+function isCreateTaskSuccess(payload: unknown): payload is CreateTaskSuccessResponse {
+  if (typeof payload !== 'object' || payload === null) {
+    return false;
+  }
+
+  const task = (payload as Partial<CreateTaskSuccessResponse>).task;
+
+  return typeof task?.id === 'string';
+}
 
 /**
  * Boton + modal para crear una tarea desde el Dashboard.
@@ -134,18 +201,30 @@ export default function CreateTaskForm({ projects }: CreateTaskFormProps) {
         body: JSON.stringify({ title, description, status, priority, projectId }),
       });
 
-      let payload: CreateTaskApiError | null = null;
+      let payload: unknown = null;
 
       try {
-        payload = (await response.json()) as CreateTaskApiError;
+        payload = await response.json();
       } catch {
         // Respuesta sin cuerpo JSON: se maneja con el mensaje generico.
         payload = null;
       }
 
       if (!response.ok) {
-        setFormError(payload?.error ?? 'No se pudo crear la tarea');
-        setFieldErrors(payload?.fieldErrors ?? {});
+        // El modal permanece abierto mostrando el motivo (401/400/404/500).
+        const body = readApiError(payload);
+
+        setFormError(messageForHttpError(response.status, body?.error));
+        setFieldErrors(body?.fieldErrors ?? {});
+        return;
+      }
+
+      // Un 2xx que no trae la tarea creada no debe cerrar el modal en
+      // silencio: se informa del fallo y se conservan los datos escritos.
+      if (!isCreateTaskSuccess(payload)) {
+        setFormError(
+          'El servidor no confirmó la creación de la tarea. Comprueba tu conexión y vuelve a intentarlo.',
+        );
         return;
       }
 
@@ -339,7 +418,10 @@ export default function CreateTaskForm({ projects }: CreateTaskFormProps) {
 
               {/* Error general del servidor */}
               {formError && (
-                <p className="rounded-xl border border-danger/30 bg-danger/10 px-3 py-2 text-sm text-danger">
+                <p
+                  role="alert"
+                  className="rounded-xl border border-danger/30 bg-danger/10 px-3 py-2 text-sm text-danger"
+                >
                   {formError}
                 </p>
               )}

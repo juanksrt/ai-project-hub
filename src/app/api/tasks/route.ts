@@ -1,3 +1,4 @@
+import type { Session } from 'next-auth';
 import { NextResponse } from 'next/server';
 
 import { auth } from '@/auth';
@@ -30,7 +31,9 @@ interface CreateTaskErrorResponse {
  * `POST /api/tasks` — crea una tarea asignada al usuario autenticado.
  *
  * Flujo:
- * 1. `auth()` lee la sesion activa de NextAuth (JWT). Sin sesion -> 401.
+ * 1. `auth()` lee la sesion activa de NextAuth (JWT) dentro de su propio
+ *    `try/catch`: sin sesion -> 401, y si NextAuth lanza -> tambien 401 con
+ *    mensaje claro (nunca un 500 generico).
  * 2. El cuerpo se valida con `createTaskSchema` (Zod). Payload invalido -> 400
  *    con `fieldErrors` por campo para que el formulario marque los inputs.
  * 3. Se comprueba que el proyecto existe en la base de datos -> 404 si no.
@@ -46,7 +49,21 @@ export async function POST(
   request: Request,
 ): Promise<NextResponse<CreateTaskSuccessResponse | CreateTaskErrorResponse>> {
   try {
-    const session = await auth();
+    // Si `auth()` lanza (cookie corrupta, AUTH_SECRET mal configurado...), se
+    // responde 401 con un mensaje claro: sin este try/catch el error caeria en
+    // el catch general y la persona veria un 500 sin saber que es la sesion.
+    let session: Session | null = null;
+
+    try {
+      session = await auth();
+    } catch (error) {
+      console.error('No se pudo leer la sesión en POST /api/tasks:', error);
+
+      return NextResponse.json<CreateTaskErrorResponse>(
+        { error: 'No pudimos verificar tu sesión. Inicia sesión de nuevo.' },
+        { status: 401 },
+      );
+    }
 
     if (!session?.user?.id) {
       return NextResponse.json<CreateTaskErrorResponse>(

@@ -153,6 +153,46 @@ describe('POST /api/chat', () => {
     expect(streamTextMock).not.toHaveBeenCalled();
   });
 
+  it('devuelve un mensaje amigable si la sesion caida lanza, en vez de un 500', async () => {
+    authMock.mockRejectedValue(new Error('jwt malformed'));
+
+    const response = await POST(makeRequest({ messages: VALID_MESSAGES }));
+    const body = (await response.json()) as ChatErrorResponse;
+
+    expect(response.status).toBe(401);
+    expect(body.error).toBe('Por favor inicia sesión o verifica la API Key de Gemini');
+    expect(similaritySearchMock).not.toHaveBeenCalled();
+    expect(consoleErrorSpy).toHaveBeenCalled();
+  });
+
+  it('devuelve un mensaje amigable si Gemini no puede montar la respuesta', async () => {
+    streamTextMock.mockImplementation(() => {
+      throw new Error('Falta GOOGLE_GENERATIVE_AI_API_KEY');
+    });
+
+    const response = await POST(makeRequest({ messages: VALID_MESSAGES }));
+    const body = (await response.json()) as ChatErrorResponse;
+
+    expect(response.status).toBe(500);
+    expect(body.error).toBe('Por favor inicia sesión o verifica la API Key de Gemini');
+    expect(consoleErrorSpy).toHaveBeenCalled();
+  });
+
+  it('devuelve el mensaje amigable si la credencial falla durante la recuperacion', async () => {
+    const sinKey = (): EmbeddingUnavailableError =>
+      new EmbeddingUnavailableError('Falta GOOGLE_GENERATIVE_AI_API_KEY');
+
+    similaritySearchMock.mockRejectedValue(sinKey());
+    lexicalSearchMock.mockRejectedValue(sinKey());
+
+    const response = await POST(makeRequest({ messages: VALID_MESSAGES }));
+    const body = (await response.json()) as ChatErrorResponse;
+
+    expect(response.status).toBe(500);
+    expect(body.error).toBe('Por favor inicia sesión o verifica la API Key de Gemini');
+    expect(consoleErrorSpy).toHaveBeenCalled();
+  });
+
   it('responde 400 si el cuerpo no es JSON valido', async () => {
     const response = await POST(makeRequest('esto no es json'));
     const body = (await response.json()) as ChatErrorResponse;

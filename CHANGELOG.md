@@ -1123,3 +1123,84 @@ pequeños.
 | **`pages.signIn`** de Auth.js | `src/lib/auth-config.ts` |
 | **Skeleton / shimmer** como componente reutilizable | `src/components/ui/Skeleton.tsx` |
 | **Server Component + Client Component** separados para poder exportar `metadata` | `src/app/login/` |
+
+---
+
+## 🩹 Fase 9 — Feedback de errores en el formulario de tareas y el chat RAG
+
+**Problema:** la suite pasaba al 100 % (156/156), pero había dos fallos de
+experiencia de usuario en los caminos de error:
+
+1. **Modal de tareas:** un 401 pintaba el texto crudo de la API
+   (*"No autenticado"*) y, si la respuesta venía sin JSON de tarea, un 2xx
+   habría cerrado el modal **sin crear nada**. Además, si `auth()` lanzaba en
+   `POST /api/tasks`, el error caía en el catch general → **500** en vez de 401.
+2. **Chat RAG:** si `auth()` o la generación con Gemini lanzaban (p. ej.
+   `GOOGLE_GENERATIVE_AI_API_KEY` ausente o rechazada), el cliente recibía el
+   **500 no controlado** *"Error interno en la API RAG"*.
+
+**Rama:** `fix/ui-runtime-feedback` → todo vía Pull Request, siguiendo el
+`AGENT.md` §3 (*Modo Plan*): el plan se presentó y aprobó antes de tocar código.
+
+### 1. `CreateTaskForm.tsx`: el modal nunca cierra en silencio
+
+| Situación | Antes | Después |
+|---|---|---|
+| 401 | `"No autenticado"` (texto crudo) | *"Tu sesión no está activa. Inicia sesión de nuevo para crear la tarea."* |
+| 400 / 404 | mensaje de la API | se respeta el mensaje de la API (+ `fieldErrors` por campo) |
+| 500 o respuesta sin cuerpo | `"No se pudo crear la tarea"` | mensaje específico según el status |
+| 2xx **sin** `task.id` (HTML de un proxy, etc.) | **cerraba el modal sin crear nada** | error en el modal y datos conservados para reintentar |
+| 201 correcto | cerraba + `router.refresh()` | igual: se mantiene `router.refresh()` para refrescar el Dashboard |
+
+La guarda `isCreateTaskSuccess()` es la que impide el cierre silencioso: solo
+se cierra cuando el cuerpo trae el `task.id` del 201. El párrafo de error gana
+`role="alert"` para los lectores de pantalla.
+
+### 2. `POST /api/tasks`: falla de sesión → 401, nunca 500
+
+`auth()` se movió a su propio `try/catch`: si NextAuth lanza (cookie corrupta,
+`AUTH_SECRET` mal configurado…) se responde **401** con *"No pudimos verificar
+tu sesión. Inicia sesión de nuevo."* y el error queda registrado en consola.
+Sin sesión (`null`) se mantiene el 401 `"No autenticado"`.
+
+### 3. `POST /api/chat`: mensaje amigable ante sesión o API Key
+
+Constante `SESSION_OR_KEY_MESSAGE` = *"Por favor inicia sesión o verifica la
+API Key de Gemini"*, usada en los tres caminos que antes podían soltar un 500:
+
+| Situación | Status | Mensaje |
+|---|---|---|
+| `auth()` lanza (sesión caída) | 401 | `SESSION_OR_KEY_MESSAGE` |
+| `streamText` / Gemini lanza | 500 | `SESSION_OR_KEY_MESSAGE` |
+| `EmbeddingUnavailableError` o error con `GOOGLE_GENERATIVE_AI_API_KEY` | 500 | `SESSION_OR_KEY_MESSAGE` |
+
+Se conservan tal cual el 401 sin sesión (`"No autenticado"`), los 400 de Zod y
+el **modo contexto 200** cuando falta la key (degradado ya existente).
+
+### 4. Cambios por archivo
+
+| Archivo | Cambio |
+|---|---|
+| `src/components/features/CreateTaskForm.tsx` | `messageForHttpError()`, `readApiError()`, `isCreateTaskSuccess()` y `role="alert"` |
+| `src/app/api/tasks/route.ts` | `try/catch` en `auth()` → 401 con mensaje claro |
+| `src/app/api/chat/route.ts` | `SESSION_OR_KEY_MESSAGE`, `try/catch` en `auth()` y en la generación, `isCredentialError()` |
+| `src/app/api/chat/__tests__/chat-route.test.ts` | +3 tests (sesión caída, Gemini lanza, credencial cae en la recuperación) |
+| `src/app/api/tasks/__tests__/tasks-route.test.ts` | +1 test (sesión caída → 401, no 500) |
+| `CHANGELOG.md` | esta entrada |
+
+### 5. Verificaciones
+
+| Verificación | Resultado |
+|---|---|
+| `npm run type-check` | ✅ 0 errores |
+| `npm run lint` | ✅ 0 errores |
+| `npm test` | ✅ **160 tests** (15 archivos), 4 nuevos; consola sin avisos ni errores |
+| `npm run build` | ✅ compilación limpia, 10 rutas (`/Dashboard`, `/login` y las 5 API) |
+
+### 💡 Conceptos introducidos en esta fase
+
+| Concepto | Dónde |
+|---|---|
+| **Type guard sobre `unknown`** | `isCreateTaskSuccess()` evita cerrar el modal con un cuerpo que no es el esperado |
+| **Mapeo de status → mensaje en el cliente** | `messageForHttpError()` traduce el contrato HTTP en una acción concreta para la persona |
+| **`try/catch` por capas** | cada `await` crítico (`auth()`, generación) tiene el suyo con su propia respuesta |
