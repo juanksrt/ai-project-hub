@@ -94,6 +94,18 @@ describe('POST /api/tasks', () => {
     expect(createMock).not.toHaveBeenCalled();
   });
 
+  it('responde 401 con mensaje claro si la sesion caida lanza, en vez de 500', async () => {
+    authMock.mockRejectedValue(new Error('jwt malformed'));
+
+    const response = await POST(makeJsonRequest(VALID_BODY));
+    const body = (await response.json()) as RouteResponseBody;
+
+    expect(response.status).toBe(401);
+    expect(body.error).toBe('No pudimos verificar tu sesión. Inicia sesión de nuevo.');
+    expect(createMock).not.toHaveBeenCalled();
+    expect(consoleErrorSpy).toHaveBeenCalled();
+  });
+
   it('responde 400 con fieldErrors cuando el payload no pasa la validacion de Zod', async () => {
     const response = await POST(
       makeJsonRequest({ ...VALID_BODY, title: '   ', status: 'IN_REVISION' }),
