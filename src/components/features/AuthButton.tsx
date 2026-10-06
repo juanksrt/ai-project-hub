@@ -35,7 +35,7 @@ export default function AuthButton() {
   if (status === 'authenticated' && session?.user) {
     return (
       <div className="flex items-center gap-3">
-        <span className="hidden text-sm text-slate-400 sm:inline">
+        <span className="hidden text-sm text-muted sm:inline">
           {sessionLabel(session.user.name, session.user.email)}
         </span>
         <button type="button" onClick={() => void handleClick()} className={action.className}>

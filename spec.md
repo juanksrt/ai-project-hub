@@ -31,6 +31,14 @@ Plataforma web SaaS de gestión de proyectos y tareas con un **asistente RAG int
 - Puntos de entrada: `src/auth.ts` (configuración y `auth()`), la ruta
   `src/app/api/auth/[...nextauth]/route.ts` y el botón Login/Logout de la
   navegación (`src/components/features/AuthButton.tsx`).
+- **Página propia de acceso** (rama `feature/frontend-ui-redesign`):
+  `src/app/login/` — server component con `metadata` + client component
+  `LoginForm.tsx`. `authConfig.pages.signIn = '/login'` hace que el botón
+  *Ingresar* y el proveedor Credentials aterricen ahí; la validación
+  previa vive en `src/lib/login-schema.ts` (Zod) y se llama con
+  `signIn('credentials', { redirect: false })` para pintar el error de
+  credenciales dentro del formulario en vez de saltar a la página de error de
+  Auth.js.
 - Variables requeridas: `AUTH_SECRET` (mínimo 32 caracteres) y, fuera de
   Vercel/Vercel-like, `AUTH_TRUST_HOST=true`.
 - El rol (`ADMIN` / `MEMBER`) se propaga al cliente en `session.user.role` sin
@@ -52,6 +60,31 @@ Plataforma web SaaS de gestión de proyectos y tareas con un **asistente RAG int
   `404` si el proyecto no existe y `500` ante fallo de base de datos.
 - UI: modal con Tailwind en `src/components/features/CreateTaskForm.tsx`
   (botón *+ Nueva Tarea* en «Tareas Prioritarias» del Dashboard).
+
+**Implementación (rama `feature/frontend-ui-redesign`): diseño y responsive:**
+- **Tailwind efectivo**: `postcss.config.mjs`, `tailwind.config.js` y
+  `src/app/globals.css`. Antes de esta rama los tres ficheros **no existían**,
+  `**/*.css` daba 0 resultados y `.next` compilaba **0 bytes de CSS**: todas
+  las clases `className` eran inertes.
+- **Design tokens** (`canvas`, `surface`, `raised`, `line`, `ink`, `muted`,
+  `accent`, `ok`, `warn`, `danger`) como variables RGB con
+  `<alpha-value>`, para que `bg-surface/70` componga opacidad. El tema se
+  alterna con `darkMode: 'class'` + script anti-FOUC en `layout.tsx` y la
+  elección persiste en `localStorage` (`ThemeToggle`).
+- **Componentes**: `src/components/ui/Badge.tsx` (`StatusBadge`,
+  `PriorityBadge`, traducción ES + tono) y `src/components/ui/Skeleton.tsx`.
+- **Estados de carga**: `src/app/Dashboard/loading.tsx` (carga con `Suspense`
+  implícito de la ruta) y skeleton de escritura en `ChatSidebar` antes del
+  primer chunk.
+- **Responsive**: una única cabecera `sticky` en el layout (se elimina la
+  duplicada del Dashboard), rejilla `grid-cols-1 lg:grid-cols-4` y chat
+  `h-[70vh] min-h-[420px] lg:h-[640px]` con `lg:sticky`.
+- **Portada** rediseñada en `src/app/page.tsx` (mantiene `<main>` como raíz,
+  que es lo que asserta `app.test.tsx`).
+- **Tests**: `src/lib/__tests__/login-schema.test.ts` (8),
+  `src/components/ui/__tests__/ui.test.tsx` (8) y
+  `src/app/__tests__/app.test.tsx` (+3). Total del repositorio: **156 tests
+  en 15 archivos**.
 
 ### Módulo 3: Asistente RAG de Documentación
 - Subida de archivos técnicos (PDF, Markdown, `.txt`) vinculados a cada proyecto.

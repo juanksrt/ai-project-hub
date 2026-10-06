@@ -178,6 +178,15 @@ export const authConfig: NextAuthConfig = {
     maxAge: 60 * 60 * 24 * 30, // 30 dias
   },
 
+  // Pagina propia de inicio de sesion. Sin esta clave, `signIn()` (el boton de
+  // la navegacion) redirige al formulario generico de Auth.js servido en
+  // `/api/auth/signin`, que no encaja con el resto de la interfaz. Al declarar
+  // `/login`, tanto ese boton como el propio proveedor Credentials aterrizan
+  // en la vista disenada para el proyecto.
+  pages: {
+    signIn: '/login',
+  },
+
   providers: [
     Credentials({
       id: 'credentials',

@@ -1,14 +1,36 @@
-import React from 'react';
-import { getPrisma } from '@/lib/prisma';
+import { FileStack, FolderKanban, ListTodo, Plus } from 'lucide-react';
+
 import CreateTaskForm from '@/components/features/CreateTaskForm';
+import { PriorityBadge, StatusBadge } from '@/components/ui/Badge';
+import { getPrisma } from '@/lib/prisma';
+
 import ChatSidebar from './ChatSidebar';
 
-// Mock data fallbacks for server component demo
-const MOCK_PROJECTS = [
+/** Proyecto listo para pintar (real o de demostracion). */
+interface ProjectView {
+  id: string;
+  name: string;
+  description: string;
+  status: string;
+  taskCount: number;
+  docCount: number;
+}
+
+/** Tarea reciente listo para pintar. */
+interface TaskView {
+  id: string;
+  title: string;
+  status: string;
+  priority: string;
+  projectName: string;
+}
+
+// Datos de demostracion para cuando Neon no esta conectada.
+const MOCK_PROJECTS: ProjectView[] = [
   {
     id: '1',
     name: 'Lanzamiento SaaS IA',
-    description: 'Plataforma con RAG y gestión de tareas en tiempo real',
+    description: 'Plataforma con RAG y gestion de tareas en tiempo real',
     status: 'ACTIVE',
     taskCount: 12,
     docCount: 3,
@@ -16,17 +38,17 @@ const MOCK_PROJECTS = [
   {
     id: '2',
     name: 'E-commerce Redesign',
-    description: 'Migración a Next.js App Router y Tailwind CSS',
+    description: 'Migracion a Next.js App Router y Tailwind CSS',
     status: 'ACTIVE',
     taskCount: 8,
     docCount: 5,
   },
 ];
 
-const MOCK_TASKS = [
+const MOCK_TASKS: TaskView[] = [
   {
     id: 't1',
-    title: 'Configurar esquema de Prisma con extensión Vector',
+    title: 'Configurar esquema de Prisma con extension Vector',
     status: 'COMPLETED',
     priority: 'HIGH',
     projectName: 'Lanzamiento SaaS IA',
@@ -40,171 +62,265 @@ const MOCK_TASKS = [
   },
   {
     id: 't3',
-    title: 'Diseñar interfaz con Shadcn UI y Tailwind',
+    title: 'Disenar interfaz con Tailwind CSS',
     status: 'PENDING',
     priority: 'MEDIUM',
     projectName: 'E-commerce Redesign',
   },
 ];
 
+/** Indicador circular junto al titulo de cada tarea. */
+function taskDotClass(status: string): string {
+  if (status === 'COMPLETED') return 'bg-ok';
+  if (status === 'IN_PROGRESS') return 'bg-warn';
+
+  return 'bg-line-strong';
+}
+
+/**
+ * Dashboard de AI Project Hub.
+ *
+ * Server Component: consulta Neon en el propio request y, si la base de datos
+ * no esta disponible, cae a los datos de demostracion. Mientras responde se
+ * pinta `loading.tsx`, que replica exactamente esta misma rejilla.
+ *
+ * @returns Vista completa: metricas, proyectos, tareas y el chat lateral.
+ */
 export default async function DashboardPage() {
-  // Intentar cargar proyectos y tareas reales de la DB si existen
-  let projects = MOCK_PROJECTS;
-  let tasks = MOCK_TASKS;
+  let projects: ProjectView[] = MOCK_PROJECTS;
+  let tasks: TaskView[] = MOCK_TASKS;
+  let documentCount = MOCK_PROJECTS.reduce(
+    (total, project) => total + project.docCount,
+    0,
+  );
 
   try {
     const prisma = getPrisma();
-    const dbProjects = await prisma.project.findMany({
-      include: { tasks: true, documents: true },
-      take: 5,
-    });
+
+    const [dbProjects, dbTasks, dbDocuments] = await Promise.all([
+      prisma.project.findMany({
+        include: { tasks: true, documents: true },
+        take: 5,
+      }),
+      prisma.task.findMany({
+        orderBy: { createdAt: 'desc' },
+        take: 8,
+        include: { project: { select: { name: true } } },
+      }),
+      prisma.document.count(),
+    ]);
+
     if (dbProjects.length > 0) {
-      projects = dbProjects.map((p) => ({
-        id: p.id,
-        name: p.name,
-        description: p.description || '',
-        status: p.status,
-        taskCount: p.tasks.length,
-        docCount: p.documents.length,
+      projects = dbProjects.map((project) => ({
+        id: project.id,
+        name: project.name,
+        description: project.description ?? '',
+        status: project.status,
+        taskCount: project.tasks.length,
+        docCount: project.documents.length,
       }));
     }
 
-    // Ultimas tareas: incluye la creada desde el formulario del Dashboard.
-    const dbTasks = await prisma.task.findMany({
-      orderBy: { createdAt: 'desc' },
-      take: 8,
-      include: { project: { select: { name: true } } },
-    });
     if (dbTasks.length > 0) {
-      tasks = dbTasks.map((t) => ({
-        id: t.id,
-        title: t.title,
-        status: t.status,
-        priority: t.priority,
-        projectName: t.project.name,
+      tasks = dbTasks.map((task) => ({
+        id: task.id,
+        title: task.title,
+        status: task.status,
+        priority: task.priority,
+        projectName: task.project.name,
       }));
     }
-  } catch (error) {
-    // Si la DB aún no está conectada, usa el fallback seguro
-    console.log('Servidor en modo demo con datos simulados');
+
+    documentCount = dbDocuments;
+  } catch {
+    // Sin conexion a Neon se sirve la vista de demostracion.
+    console.log('Dashboard en modo demo: no se pudo consultar la base de datos');
   }
 
+  const metrics = [
+    {
+      label: 'Proyectos',
+      value: projects.length,
+      hint: `${projects.filter((project) => project.status === 'ACTIVE').length} activos`,
+      icon: FolderKanban,
+    },
+    {
+      label: 'Tareas pendientes',
+      value: tasks.filter((task) => task.status !== 'COMPLETED').length,
+      hint: `de ${tasks.length} tareas recientes`,
+      icon: ListTodo,
+    },
+    {
+      label: 'Documentos indexados',
+      value: documentCount,
+      hint: 'Vectorizados para el RAG',
+      icon: FileStack,
+    },
+  ];
+
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col">
-      {/* Header Principal */}
-      <header className="border-b border-slate-800 bg-slate-900/50 backdrop-blur px-6 py-4 flex items-center justify-between">
-        <div className="flex items-center space-x-3">
-          <div className="w-8 h-8 rounded-lg bg-indigo-600 flex items-center justify-center font-bold text-white">
-            AI
-          </div>
-          <h1 className="text-xl font-bold tracking-tight">AI Project Hub</h1>
+    <div className="mx-auto w-full max-w-7xl px-4 py-6 sm:px-6 sm:py-8">
+      <div className="mb-6 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+        <div>
+          <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">
+            Dashboard
+          </h1>
+          <p className="mt-1 text-sm text-muted">
+            Tus proyectos, tareas y el asistente RAG en una sola vista.
+          </p>
         </div>
-        <div className="flex items-center space-x-4">
-          <span className="text-sm text-slate-400">Rol: Administrador</span>
-          <div className="w-9 h-9 rounded-full bg-slate-800 border border-slate-700 flex items-center justify-center text-sm font-medium">
-            US
-          </div>
-        </div>
-      </header>
+        <span className="inline-flex w-fit items-center gap-1.5 self-start rounded-full bg-accent-soft px-3 py-1 text-xs font-medium text-accent ring-1 ring-inset ring-accent/20 sm:self-auto">
+          <span className="h-1.5 w-1.5 rounded-full bg-accent" aria-hidden="true" />
+          Sincronizado con Neon
+        </span>
+      </div>
 
-      {/* Contenido Principal */}
-      <div className="flex-1 grid grid-cols-1 lg:grid-cols-4 gap-6 p-6 max-w-7xl mx-auto w-full">
-        {/* Columna Izquierda: Proyectos y Tareas (3 cols) */}
-        <main className="lg:col-span-3 space-y-6">
-          {/* Métricas Rápidas */}
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-            <div className="p-4 rounded-xl bg-slate-900 border border-slate-800">
-              <p className="text-sm font-medium text-slate-400">Proyectos Activos</p>
-              <p className="text-2xl font-bold mt-1 text-white">{projects.length}</p>
-            </div>
-            <div className="p-4 rounded-xl bg-slate-900 border border-slate-800">
-              <p className="text-sm font-medium text-slate-400">Tareas Pendientes</p>
-              <p className="text-2xl font-bold mt-1 text-indigo-400">
-                {tasks.filter((t) => t.status !== 'COMPLETED').length}
-              </p>
-            </div>
-            <div className="p-4 rounded-xl bg-slate-900 border border-slate-800">
-              <p className="text-sm font-medium text-slate-400">Documentos Indexados (RAG)</p>
-              <p className="text-2xl font-bold mt-1 text-emerald-400">8</p>
-            </div>
-          </div>
-
-          {/* Sección de Proyectos */}
-          <div>
-            <div className="flex justify-between items-center mb-4">
-              <h2 className="text-lg font-semibold">Proyectos Recientes</h2>
-              <button className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-sm font-medium transition">
-                + Nuevo Proyecto
-              </button>
-            </div>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {projects.map((project) => (
-                <div
-                  key={project.id}
-                  className="p-5 rounded-xl bg-slate-900 border border-slate-800 hover:border-slate-700 transition"
-                >
-                  <div className="flex justify-between items-start">
-                    <h3 className="font-semibold text-indigo-300">{project.name}</h3>
-                    <span className="text-xs px-2.5 py-1 rounded-full bg-emerald-950 text-emerald-400 border border-emerald-800">
-                      {project.status}
-                    </span>
-                  </div>
-                  <p className="text-sm text-slate-400 mt-2 line-clamp-2">
-                    {project.description}
-                  </p>
-                  <div className="mt-4 pt-4 border-t border-slate-800 flex justify-between text-xs text-slate-500">
-                    <span>{project.taskCount} Tareas</span>
-                    <span>{project.docCount} Docs RAG</span>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-
-          {/* Lista de Tareas */}
-          <div className="p-5 rounded-xl bg-slate-900 border border-slate-800">
-            <div className="flex justify-between items-center mb-4">
-              <h2 className="text-lg font-semibold">Tareas Prioritarias</h2>
-              <CreateTaskForm projects={projects.map(({ id, name }) => ({ id, name }))} />
-            </div>
-            <div className="space-y-3">
-              {tasks.map((task) => (
-                <div
-                  key={task.id}
-                  className="flex items-center justify-between p-3 rounded-lg bg-slate-950 border border-slate-850"
-                >
-                  <div className="flex items-center space-x-3">
-                    <div
-                      className={`w-3 h-3 rounded-full ${
-                        task.status === 'COMPLETED'
-                          ? 'bg-emerald-500'
-                          : task.status === 'IN_PROGRESS'
-                          ? 'bg-amber-500'
-                          : 'bg-slate-600'
-                      }`}
-                    />
-                    <div>
-                      <p className="text-sm font-medium">{task.title}</p>
-                      <p className="text-xs text-slate-500">{task.projectName}</p>
-                    </div>
-                  </div>
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-4">
+        <main className="space-y-6 lg:col-span-3">
+          {/* Metricas */}
+          <section aria-label="Metricas generales" className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+            {metrics.map(({ label, value, hint, icon: Icon }) => (
+              <div
+                key={label}
+                className="rounded-2xl border border-line bg-surface p-5 shadow-card transition hover:-translate-y-0.5 hover:shadow-lift"
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <p className="text-sm font-medium text-muted">{label}</p>
                   <span
-                    className={`text-xs px-2 py-0.5 rounded font-mono ${
-                      task.priority === 'HIGH'
-                        ? 'bg-red-950 text-red-400 border border-red-900'
-                        : 'bg-slate-800 text-slate-400'
-                    }`}
+                    aria-hidden="true"
+                    className="gradient-brand flex h-9 w-9 shrink-0 items-center justify-center rounded-xl text-white shadow-card"
                   >
-                    {task.priority}
+                    <Icon className="h-4 w-4" />
                   </span>
                 </div>
-              ))}
+                <p className="mt-3 text-3xl font-semibold tracking-tight tabular-nums">
+                  {value}
+                </p>
+                <p className="mt-1 text-xs text-muted">{hint}</p>
+              </div>
+            ))}
+          </section>
+
+          {/* Proyectos */}
+          <section aria-labelledby="projects-heading" className="space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <h2 id="projects-heading" className="text-lg font-semibold tracking-tight">
+                  Proyectos recientes
+                </h2>
+                <p className="text-sm text-muted">
+                  Cada proyecto y sus tareas quedan indexados en pgvector.
+                </p>
+              </div>
+              <button
+                type="button"
+                disabled
+                title="Proximamente: todavia no hay formulario de creacion de proyectos"
+                className="inline-flex items-center gap-1.5 rounded-xl bg-accent px-3.5 py-2 text-sm font-medium text-white shadow-card transition hover:bg-accent-strong disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                <Plus className="h-4 w-4" aria-hidden="true" />
+                Nuevo proyecto
+              </button>
             </div>
-          </div>
+
+            <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+              {projects.map((project) => (
+                <article
+                  key={project.id}
+                  className="flex flex-col rounded-2xl border border-line bg-surface p-5 shadow-card transition hover:border-line-strong hover:shadow-lift"
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="flex min-w-0 items-center gap-2.5">
+                      <span
+                        aria-hidden="true"
+                        className="gradient-brand flex h-9 w-9 shrink-0 items-center justify-center rounded-xl text-white shadow-card"
+                      >
+                        <FolderKanban className="h-4 w-4" />
+                      </span>
+                      <h3 className="truncate font-semibold tracking-tight">{project.name}</h3>
+                    </div>
+                    <StatusBadge value={project.status} />
+                  </div>
+
+                  <p className="mt-3 line-clamp-2 text-sm text-muted">
+                    {project.description || 'Sin descripcion todavía.'}
+                  </p>
+
+                  <div className="mt-4 flex items-center justify-between border-t border-line pt-4 text-xs text-muted">
+                    <span className="inline-flex items-center gap-1.5">
+                      <ListTodo className="h-3.5 w-3.5" aria-hidden="true" />
+                      {project.taskCount} tareas
+                    </span>
+                    <span className="inline-flex items-center gap-1.5">
+                      <FileStack className="h-3.5 w-3.5" aria-hidden="true" />
+                      {project.docCount} docs
+                    </span>
+                  </div>
+                </article>
+              ))}
+
+              {projects.length === 0 && (
+                <div className="col-span-full rounded-2xl border border-dashed border-line-strong bg-surface p-8 text-center">
+                  <p className="font-medium">Todavía no hay proyectos</p>
+                  <p className="mt-1 text-sm text-muted">
+                    Crea el primero para empezar a indexar documentos.
+                  </p>
+                </div>
+              )}
+            </div>
+          </section>
+
+          {/* Tareas */}
+          <section aria-labelledby="tasks-heading" className="rounded-2xl border border-line bg-surface p-5 shadow-card">
+            <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <h2 id="tasks-heading" className="text-lg font-semibold tracking-tight">
+                  Tareas prioritarias
+                </h2>
+                <p className="text-sm text-muted">Últimas tareas de todos los proyectos.</p>
+              </div>
+              <CreateTaskForm projects={projects.map(({ id, name }) => ({ id, name }))} />
+            </div>
+
+            <ul className="space-y-3">
+              {tasks.map((task) => (
+                <li
+                  key={task.id}
+                  className="flex items-center justify-between gap-3 rounded-xl border border-line bg-canvas p-3.5 transition hover:border-line-strong hover:bg-raised"
+                >
+                  <div className="flex min-w-0 items-center gap-3">
+                    <span
+                      aria-hidden="true"
+                      className={`h-2.5 w-2.5 shrink-0 rounded-full ${taskDotClass(task.status)}`}
+                    />
+                    <div className="min-w-0">
+                      <p className="truncate text-sm font-medium">{task.title}</p>
+                      <p className="truncate text-xs text-muted">{task.projectName}</p>
+                    </div>
+                  </div>
+
+                  <div className="flex shrink-0 items-center gap-2">
+                    <span className="hidden sm:block">
+                      <StatusBadge value={task.status} />
+                    </span>
+                    <PriorityBadge value={task.priority} />
+                  </div>
+                </li>
+              ))}
+
+              {tasks.length === 0 && (
+                <li className="rounded-xl border border-dashed border-line-strong bg-canvas p-6 text-center text-sm text-muted">
+                  Ninguna tarea todavía. Crea la primera con el formulario de arriba.
+                </li>
+              )}
+            </ul>
+          </section>
         </main>
 
-        {/* Columna Derecha: Asistente RAG Integrado (1 col) */}
-        <ChatSidebar />
+        {/* Asistente RAG */}
+        <div className="lg:sticky lg:top-24 lg:self-start">
+          <ChatSidebar />
+        </div>
       </div>
     </div>
   );
