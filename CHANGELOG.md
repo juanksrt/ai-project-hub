@@ -794,3 +794,80 @@ recuperado y las mismas cabeceras. Útil en local y en CI.
 | **Vercel AI SDK (`embed` / `streamText`)** | `src/lib/embeddings.ts` y `/api/chat` |
 | **Respuesta en streaming + metadatos en cabeceras** | `createTextStreamResponse()` + `X-RAG-*` |
 | **Modo degradado sin API key** | `lexicalSearch()` + `X-RAG-Mode: context` |
+
+---
+
+## 🟠 Fase 7 — Migración del RAG a Google Gemini (100 % gratuito)
+
+**Problema:** el asistente RAG dependía de OpenAI (`text-embedding-3-small` +
+`gpt-4o-mini`), de pago. Se migra a la capa gratuita de Google Gemini usando
+`@ai-sdk/google`, manteniendo pgvector y **sin tocar el esquema de la base de
+datos**.
+
+**Rama:** `feature/rag-gemini-free` → todo vía Pull Request (nunca push directo
+a `main`, `AGENT.md` §5).
+
+### 1. Los dos modelos del enunciado ya estaban apagados
+
+Comprobado antes de escribir una sola línea, en la tabla oficial de
+deprecaciones de Google (<https://ai.google.dev/gemini-api/docs/deprecations>,
+actualizada el 01/10/2026):
+
+| Modelo pedido | Estado real (05/10/2026) | Sustituto aplicado |
+|---|---|---|
+| `text-embedding-004` | 🔴 **apagado el 14/01/2026** → `404 Not Found` en runtime | `gemini-embedding-2` |
+| `gemini-2.0-flash` | 🟠 shutdown anunciado para el **01/06/2026** | `gemini-3.6-flash` |
+
+Los dos sustitutos figuran como **"Free of charge"** (input y output) en la
+tabla de precios de la Gemini Developer API, así que se cumple el requisito de
+que la integración sea **100 % gratuita**.
+
+### 2. La dimensión vectorial NO cambia (paso 4 del enunciado)
+
+| Decisión | Por qué |
+|---|---|
+| Mantener `vector(1536)` | `gemini-embedding-2` devuelve 3072 por defecto, pero admite `outputDimensionality`; a 1536 el MTEB (68.17) es prácticamente igual que a 3072 |
+| Cero migraciones SQL | Si se hubiera seguido `text-embedding-004` (768) haría falta `ALTER TABLE` de `vector(1536)` → `vector(768)`, **recrear el índice HNSW** y purgar las filas existentes: PostgreSQL no castea entre dimensiones |
+| El test E2E no se toca | Usa `EMBEDDING_DIMENSIONS`, así que se adapta solo |
+| `schema.prisma` solo cambia un comentario | El dato de la dimensión vive en el código, no en el modelo |
+
+### 3. Cambios por archivo
+
+| Archivo | Cambio |
+|---|---|
+| `package.json` | `+ @ai-sdk/google@4.0.88`, `− @ai-sdk/openai` (quedó sin uso) |
+| `src/lib/embeddings.ts` | `google.embeddingModel('gemini-embedding-2')` + `providerOptions: { google: { outputDimensionality: 1536 } }`; `hasOpenAiCredentials` → `hasGoogleCredentials`; `OPENAI_CREDENTIAL_ENV` → `GOOGLE_CREDENTIAL_ENV = 'GOOGLE_GENERATIVE_AI_API_KEY'` |
+| `src/app/api/chat/route.ts` | `CHAT_MODEL_ID = 'gemini-3.6-flash'` y `google(CHAT_MODEL_ID)` en `streamText` |
+| `src/lib/__tests__/embeddings.test.ts` | Mock de `@ai-sdk/google`, y nuevo caso que fija `outputDimensionality: 1536` |
+| `src/app/api/chat/__tests__/chat-route.test.ts` | Mock del provider callable y del fallback `context` |
+| `.env.example` | `OPENAI_API_KEY` → `GOOGLE_GENERATIVE_AI_API_KEY` con enlace a AI Studio |
+| `spec.md`, `prisma/schema.prisma` (comentario) | Documentación del módulo IA & RAG |
+
+### 4. Decisiones técnicas
+
+| Decisión | Por qué |
+|---|---|
+| `embeddingModel()` y no `textEmbeddingModel()` | En `@ai-sdk/google@4` `textEmbeddingModel()` está **deprecado**: el alias sigue funcionando pero marca el camino a seguir |
+| `GOOGLE_GENERATIVE_AI_API_KEY` como credencial | Es la variable que el provider lee **por defecto**: `createGoogle({ apiKey })` no hace falta en ninguna parte |
+| `@ai-sdk/google@4.0.88` y no otra línea | Misma línea major que el `@ai-sdk/openai@4.0.84` que se quitó: peer `zod ^4.1.8` y `ProviderV4`, compatible con `ai@7.0.128` sin tocar el SDK |
+| El degradado sin clave se conserva igual | Sin `GOOGLE_GENERATIVE_AI_API_KEY`, `/api/chat` sigue respondiendo en modo `context` (léxico + fuentes) en vez de 500 |
+| Scope acotado a la migración | Los prefijos de *task type* que Google recomienda para `gemini-embedding-2` (`task: search result \| query: ...`) se dejan como pendiente para no mezclar un cambio de calidad con uno de proveedor |
+
+### 5. Verificaciones
+
+| Verificación | Resultado |
+|---|---|
+| `npm run type-check` | ✅ 0 errores |
+| `npm run lint` | ✅ 0 errores |
+| `npm test` | ✅ **125 tests** (13 archivos) |
+| `npm run build` | ✅ rutas `/api/chat`, `/api/projects`, `/api/projects/[id]` y `/api/tasks` registradas |
+| E2E `embeddings-e2e.test.ts` | ✅ 3 tests contra Neon (cast a `vector`, `ON CONFLICT`, coseno, `ILIKE`, `DELETE`) |
+
+### 6. Pendientes tras la Fase 7
+
+| # | Tarea | Motivo |
+|---|---|---|
+| 1 | **Re-indexar los embeddings existentes** | Los vectores actuales vienen de `text-embedding-3-small`: caben en `vector(1536)`, pero viven en un **espacio semántico distinto** al de Gemini, así que la recuperación será mala hasta re-generarlos (sigue pendiente el `reindexProject` en lote de la Fase 6) |
+| 2 | Prefijos de *task type* en `generateEmbedding` | Google recomienda `task: search result \| query:` / `title: ... \| text:` para RAG asimétrico con `gemini-embedding-2` |
+| 3 | Clave real en `.env.local` y en Vercel | La migración deja el código listo; sin `GOOGLE_GENERATIVE_AI_API_KEY` el chat opera en modo `context` |
+| 4 | Pendientes de la Fase 6 no abordados aquí | Embeddings de `DocumentChunk`, botón *+ Nuevo Proyecto*, scoping por usuario |
