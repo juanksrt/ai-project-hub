@@ -1,0 +1,102 @@
+/**
+ * Hoja de estilos global: los tokens del tema y las clases compuestas.
+ *
+ * Es el unico `.css` del proyecto (AGENT.md §5) y no hay ni una sola regla
+ * escrita a mano: todo lo que no son variables de tema se expresa con
+ * `@apply`, de modo que la fuente de verdad sigue siendo Tailwind y sus
+ * utilities siguen siendo purgables.
+ *
+ * Los colores se declaran como variables CSS con tres canales RGB separados
+ * por espacios (no hex) para que Tailwind pueda aplicar opacidad encima:
+ *
+ *     --c-surface: 255 255 255;
+ *     bg-surface/70  ->  rgb(255 255 255 / 0.7)
+ *
+ * El tema oscuro vive en la clase `.dark` de <html>, no en
+ * `prefers-color-scheme`, porque la eleccion del usuario se guarda en
+ * `localStorage` y hay que poder alternar en caliente (ver ThemeToggle).
+ *
+ * `:root` es el tema claro; el estado por defecto de <html> es `.dark`, que se
+ * pinta antes de hidratar para evitar un destello blanco.
+ */
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: light;
+
+  --c-canvas: 248 250 252;
+  --c-surface: 255 255 255;
+  --c-raised: 241 245 249;
+  --c-line: 226 232 240;
+  --c-line-strong: 203 213 225;
+  --c-ink: 15 23 42;
+  --c-muted: 100 116 139;
+  --c-accent: 79 70 229;
+  --c-accent-strong: 67 56 202;
+  --c-accent-soft: 238 242 255;
+  --c-ok: 5 150 105;
+  --c-warn: 217 119 6;
+  --c-danger: 220 38 38;
+}
+
+.dark {
+  color-scheme: dark;
+
+  --c-canvas: 2 6 23;
+  --c-surface: 15 23 42;
+  --c-raised: 30 41 59;
+  --c-line: 30 41 59;
+  --c-line-strong: 51 65 85;
+  --c-ink: 226 232 240;
+  --c-muted: 148 163 184;
+  --c-accent: 99 102 241;
+  --c-accent-strong: 129 140 248;
+  --c-accent-soft: 30 27 75;
+  --c-ok: 52 211 153;
+  --c-warn: 251 191 36;
+  --c-danger: 248 113 113;
+}
+
+@layer base {
+  body {
+    @apply bg-canvas text-ink antialiased;
+  }
+
+  /* Focus visible y consistente en todo el sitio: accesibilidad sin depender
+     del navegador por defecto. */
+  :focus-visible {
+    @apply outline outline-2 outline-offset-2 outline-accent;
+  }
+
+  ::selection {
+    @apply bg-accent/30;
+  }
+}
+
+@layer components {
+  /* Gradiente de marca: los tres tonos salen de la paleta declarada en
+     `tailwind.config.js`, asi que no se escribe ni un valor de color. */
+  .gradient-brand {
+    @apply bg-gradient-to-br from-accent via-violet-500 to-sky-500;
+  }
+
+  /* Titulo con el texto relleno por el gradiente de marca. */
+  .text-gradient {
+    @apply bg-gradient-to-br from-accent via-violet-500 to-sky-500 bg-clip-text text-transparent;
+  }
+
+  /*
+   * Skeleton de carga: un bloque plano con un brillo que barre en bucle.
+   * `animate-shimmer` viene de `theme.extend.keyframes` en el config.
+   */
+  .skeleton {
+    @apply relative overflow-hidden rounded-md bg-raised;
+  }
+
+  .skeleton::after {
+    @apply absolute inset-0 -translate-x-full bg-gradient-to-r from-transparent via-line-strong/45 to-transparent content-[''] animate-shimmer;
+  }
+}
