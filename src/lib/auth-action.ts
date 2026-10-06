@@ -22,20 +22,20 @@ const SIGNED_OUT: AuthAction = {
   label: 'Ingresar',
   kind: 'signIn',
   className:
-    'rounded-lg bg-indigo-600 hover:bg-indigo-500 px-3 py-1.5 text-sm font-medium text-white transition',
+    'rounded-xl bg-accent px-4 py-2 text-sm font-medium text-white shadow-card transition hover:bg-accent-strong',
 };
 
 const SIGNED_IN: AuthAction = {
   label: 'Cerrar sesion',
   kind: 'signOut',
   className:
-    'rounded-lg border border-slate-700 bg-slate-800 hover:bg-slate-700 px-3 py-1.5 text-sm font-medium text-slate-100 transition',
+    'rounded-xl border border-line-strong bg-surface px-4 py-2 text-sm font-medium text-ink shadow-card transition hover:bg-raised',
 };
 
 const LOADING: AuthAction = {
   label: 'Cargando...',
   kind: 'none',
-  className: 'px-3 py-1.5 text-sm text-slate-500',
+  className: 'px-4 py-2 text-sm text-muted',
 };
 
 /**
