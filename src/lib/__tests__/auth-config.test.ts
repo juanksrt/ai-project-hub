@@ -55,10 +55,13 @@ describe('authConfig', () => {
     expect(authConfig.adapter).toBeDefined();
   });
 
-  it('no define pages.signIn: apuntar a /api/auth/signin crea un bucle', () => {
-    // Auth.js redirige a options.pages.signIn en lugar de renderizar su
-    // formulario, así que apuntar a la propia ruta sería un redirect infinito.
-    expect(authConfig.pages?.signIn).toBeUndefined();
+  it('apunta pages.signIn a /login y nunca a la ruta interna de Auth.js', () => {
+    // Auth.js redirige a options.pages.signIn en vez de renderizar su
+    // formulario, así que debe ser una pagina propia. Apuntar a
+    // /api/auth/signin re-direccionaria a si misma: redirect infinito.
+    expect(authConfig.pages?.signIn).toBe('/login');
+    expect(authConfig.pages?.signIn).not.toBe('/api/auth/signin');
+    expect(authConfig.pages?.signIn).not.toBe('/api/auth/signout');
   });
 
   it('declara los callbacks jwt y session', () => {
