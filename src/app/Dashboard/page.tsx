@@ -6,7 +6,7 @@ import { getPrisma } from '@/lib/prisma';
 
 import ChatSidebar from './ChatSidebar';
 
-/** Proyecto listo para pintar (real o de demostracion). */
+/** Proyecto listo para pintar con datos reales de la base de datos. */
 interface ProjectView {
   id: string;
   name: string;
@@ -16,7 +16,7 @@ interface ProjectView {
   docCount: number;
 }
 
-/** Tarea reciente listo para pintar. */
+/** Tarea reciente listo para pintar con datos reales de la base de datos. */
 interface TaskView {
   id: string;
   title: string;
@@ -24,50 +24,6 @@ interface TaskView {
   priority: string;
   projectName: string;
 }
-
-// Datos de demostracion para cuando Neon no esta conectada.
-const MOCK_PROJECTS: ProjectView[] = [
-  {
-    id: '1',
-    name: 'Lanzamiento SaaS IA',
-    description: 'Plataforma con RAG y gestion de tareas en tiempo real',
-    status: 'ACTIVE',
-    taskCount: 12,
-    docCount: 3,
-  },
-  {
-    id: '2',
-    name: 'E-commerce Redesign',
-    description: 'Migracion a Next.js App Router y Tailwind CSS',
-    status: 'ACTIVE',
-    taskCount: 8,
-    docCount: 5,
-  },
-];
-
-const MOCK_TASKS: TaskView[] = [
-  {
-    id: 't1',
-    title: 'Configurar esquema de Prisma con extension Vector',
-    status: 'COMPLETED',
-    priority: 'HIGH',
-    projectName: 'Lanzamiento SaaS IA',
-  },
-  {
-    id: 't2',
-    title: 'Crear pipeline de RAG con Vercel AI SDK',
-    status: 'IN_PROGRESS',
-    priority: 'HIGH',
-    projectName: 'Lanzamiento SaaS IA',
-  },
-  {
-    id: 't3',
-    title: 'Disenar interfaz con Tailwind CSS',
-    status: 'PENDING',
-    priority: 'MEDIUM',
-    projectName: 'E-commerce Redesign',
-  },
-];
 
 /** Indicador circular junto al titulo de cada tarea. */
 function taskDotClass(status: string): string {
@@ -80,19 +36,19 @@ function taskDotClass(status: string): string {
 /**
  * Dashboard de AI Project Hub.
  *
- * Server Component: consulta Neon en el propio request y, si la base de datos
- * no esta disponible, cae a los datos de demostracion. Mientras responde se
- * pinta `loading.tsx`, que replica exactamente esta misma rejilla.
+ * Server Component: consulta Neon en el propio request. Solo se pintan datos
+ * reales: si la base de datos no responde o no hay registros, se muestran los
+ * estados vacios de cada seccion y el badge de conexion lo indica, en lugar de
+ * servir datos de demostracion. Mientras responde se pinta `loading.tsx`, que
+ * replica exactamente esta misma rejilla.
  *
  * @returns Vista completa: metricas, proyectos, tareas y el chat lateral.
  */
 export default async function DashboardPage() {
-  let projects: ProjectView[] = MOCK_PROJECTS;
-  let tasks: TaskView[] = MOCK_TASKS;
-  let documentCount = MOCK_PROJECTS.reduce(
-    (total, project) => total + project.docCount,
-    0,
-  );
+  let projects: ProjectView[] = [];
+  let tasks: TaskView[] = [];
+  let documentCount = 0;
+  let dbOnline = false;
 
   try {
     const prisma = getPrisma();
@@ -110,31 +66,29 @@ export default async function DashboardPage() {
       prisma.document.count(),
     ]);
 
-    if (dbProjects.length > 0) {
-      projects = dbProjects.map((project) => ({
-        id: project.id,
-        name: project.name,
-        description: project.description ?? '',
-        status: project.status,
-        taskCount: project.tasks.length,
-        docCount: project.documents.length,
-      }));
-    }
+    projects = dbProjects.map((project) => ({
+      id: project.id,
+      name: project.name,
+      description: project.description ?? '',
+      status: project.status,
+      taskCount: project.tasks.length,
+      docCount: project.documents.length,
+    }));
 
-    if (dbTasks.length > 0) {
-      tasks = dbTasks.map((task) => ({
-        id: task.id,
-        title: task.title,
-        status: task.status,
-        priority: task.priority,
-        projectName: task.project.name,
-      }));
-    }
+    tasks = dbTasks.map((task) => ({
+      id: task.id,
+      title: task.title,
+      status: task.status,
+      priority: task.priority,
+      projectName: task.project.name,
+    }));
 
     documentCount = dbDocuments;
-  } catch {
-    // Sin conexion a Neon se sirve la vista de demostracion.
-    console.log('Dashboard en modo demo: no se pudo consultar la base de datos');
+    dbOnline = true;
+  } catch (error) {
+    // Sin conexion no se inventan datos: se sirven los estados vacios y el
+    // badge de cabecera avisa de que el Dashboard no esta sincronizado.
+    console.error('Dashboard: no se pudo consultar la base de datos:', error);
   }
 
   const metrics = [
@@ -147,13 +101,13 @@ export default async function DashboardPage() {
     {
       label: 'Tareas pendientes',
       value: tasks.filter((task) => task.status !== 'COMPLETED').length,
-      hint: `de ${tasks.length} tareas recientes`,
+      hint: tasks.length > 0 ? `de ${tasks.length} tareas recientes` : 'sin tareas todavia',
       icon: ListTodo,
     },
     {
       label: 'Documentos indexados',
       value: documentCount,
-      hint: 'Vectorizados para el RAG',
+      hint: documentCount > 0 ? 'Vectorizados para el RAG' : 'sin documentos todavia',
       icon: FileStack,
     },
   ];
@@ -169,9 +123,18 @@ export default async function DashboardPage() {
             Tus proyectos, tareas y el asistente RAG en una sola vista.
           </p>
         </div>
-        <span className="inline-flex w-fit items-center gap-1.5 self-start rounded-full bg-accent-soft px-3 py-1 text-xs font-medium text-accent ring-1 ring-inset ring-accent/20 sm:self-auto">
-          <span className="h-1.5 w-1.5 rounded-full bg-accent" aria-hidden="true" />
-          Sincronizado con Neon
+        <span
+          className={`inline-flex w-fit items-center gap-1.5 self-start rounded-full px-3 py-1 text-xs font-medium ring-1 ring-inset sm:self-auto ${
+            dbOnline
+              ? 'bg-accent-soft text-accent ring-accent/20'
+              : 'bg-warn/10 text-warn ring-warn/30'
+          }`}
+        >
+          <span
+            className={`h-1.5 w-1.5 rounded-full ${dbOnline ? 'bg-accent' : 'bg-warn'}`}
+            aria-hidden="true"
+          />
+          {dbOnline ? 'Sincronizado con Neon' : 'Sin conexión con Neon'}
         </span>
       </div>
 
