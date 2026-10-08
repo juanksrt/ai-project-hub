@@ -72,16 +72,19 @@ Reglas:
  *    El chat devuelve contenido de proyectos y tareas, asi que no puede ser
  *    publico.
  * 2. El cuerpo se valida con `chatRequestSchema` (Zod) -> 400 si no cumple.
- * 3. La ultima pregunta se embede con el Vercel AI SDK y se busca por
+ * 3. Si el payload trae `projectId`, se comprueba que el proyecto exista
+ *    (404) y que pertenezca al usuario de la sesion o que este sea ADMIN
+ *    (403), para que nadie lea documentos de proyectos ajenos.
+ * 4. La ultima pregunta se embede con el Vercel AI SDK y se busca por
  *    similitud coseno (`<=>`) en la tabla `Embedding` con pgvector. Si falta
  *    `GOOGLE_GENERATIVE_AI_API_KEY` se cae a busqueda lexica (`ILIKE`) para
  *    no dejar el chat muerto; cualquier otro fallo de base de datos -> 500.
- * 4. Los fragmentos de `DocumentChunk` del proyecto se anaden al contexto.
- * 5. Con credencial de IA se genera la respuesta con `streamText` y se
+ * 5. Los fragmentos de `DocumentChunk` del proyecto se anaden al contexto.
+ * 6. Con credencial de IA se genera la respuesta con `streamText` y se
  *    devuelve como stream de texto plano; sin ella se devuelve el contexto
  *    recuperado (modo `context`). Si la generacion lanza, el `try/catch`
  *    responde `SESSION_OR_KEY_MESSAGE` en lugar del 500 generico.
- * 6. Las fuentes viajan en las cabeceras `X-RAG-*` porque el cuerpo es un
+ * 7. Las fuentes viajan en las cabeceras `X-RAG-*` porque el cuerpo es un
  *    stream: se envian antes de que empiece a generarse la respuesta.
  *
  * @param request - Peticion con `{ messages, projectId? }`.
@@ -133,6 +136,21 @@ export async function POST(request: Request): Promise<Response> {
 
     if (!question) {
       return NextResponse.json<ChatErrorResponse>({ error: 'Mensaje requerido' }, { status: 400 });
+    }
+
+    // El projectId viene del cliente: antes de recuperar contexto hay que
+    // comprobar que el proyecto exista (404) y que el usuario de la sesion
+    // pueda verlo (propietario o ADMIN, 403). Sin esta comprobacion cualquier
+    // usuario autenticado leeria documentos de proyectos ajenos.
+    if (parsed.data.projectId) {
+      const access = await resolveProjectAccess(parsed.data.projectId, session);
+
+      if (!access.ok) {
+        return NextResponse.json<ChatErrorResponse>(
+          { error: access.error },
+          { status: access.status },
+        );
+      }
     }
 
     const { hits, retrieval } = await retrieveContext(question, parsed.data.projectId);
@@ -198,6 +216,43 @@ function isCredentialError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
 
   return /GOOGLE_GENERATIVE_AI_API_KEY|api key|credential|gemini/i.test(message);
+}
+
+/** Resultado de la comprobacion de acceso al proyecto del chat. */
+type ProjectAccessResult =
+  | { ok: true }
+  | { ok: false; status: 403 | 404; error: string };
+
+/**
+ * Comprueba que el proyecto del payload pertenezca al usuario de la sesion.
+ *
+ * El `projectId` llega del cliente, asi que debe tratarse como no confiable:
+ * sin esta guarda, cualquier usuario autenticado podria leer los documentos
+ * de cualquier proyecto pasando su identificador.
+ *
+ * @param projectId - Identificador enviado en la peticion (ya validado por Zod).
+ * @param session - Sesion activa con `user.id` y `user.role`.
+ * @returns `{ ok: true }` si hay acceso; 404 si no existe; 403 si es ajeno.
+ * @throws {Error} Si falla la base de datos (se propaga al catch del handler).
+ */
+async function resolveProjectAccess(
+  projectId: string,
+  session: Session,
+): Promise<ProjectAccessResult> {
+  const project = await getPrisma().project.findUnique({
+    where: { id: projectId },
+    select: { ownerId: true },
+  });
+
+  if (!project) {
+    return { ok: false, status: 404, error: 'Proyecto no encontrado' };
+  }
+
+  if (project.ownerId !== session.user.id && session.user.role !== 'ADMIN') {
+    return { ok: false, status: 403, error: 'Sin acceso a este proyecto' };
+  }
+
+  return { ok: true };
 }
 
 /**

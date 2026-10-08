@@ -4,6 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
+    "prebuild": "node -e \"if(!process.env.AUTH_SECRET) throw new Error('AUTH_SECRET requerido: anadelo a las variables de entorno antes de compilar'); if(!process.env.GOOGLE_GENERATIVE_AI_API_KEY) console.warn('ADVERTENCIA: GOOGLE_GENERATIVE_AI_API_KEY no definido: el chat funcionara en modo context')\"",
     "build": "prisma generate && next build",
     "start": "next start",
     "lint": "eslint .",
