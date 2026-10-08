@@ -1,18 +1,24 @@
 import { PrismaClient, Role, TaskStatus, TaskPriority, ProjectStatus } from '@prisma/client';
 
 import { hashPassword } from '../src/lib/credentials';
+import { assertSeedAllowed } from '../src/lib/seed-guard';
 
 const prisma = new PrismaClient();
 
 /**
  * Password de los usuarios de prueba.
  *
- * SOLO sirve para desarrollo: el seed limpia la base entera, asi que nunca se
- * ejecuta contra produccion. Se puede sobreescribir con SEED_USER_PASSWORD.
+ * SOLO sirve para desarrollo: el seed limpia la base entera y el guard de
+ * `seed-guard.ts` bloquea su ejecucion contra bases de datos remotas salvo
+ * `SEED_CONFIRM=1`. Se puede sobreescribir con SEED_USER_PASSWORD.
  */
 const SEED_PASSWORD = process.env.SEED_USER_PASSWORD ?? 'Admin1234!';
 
 async function main(): Promise<void> {
+  // Guardia de seguridad: aborta antes de borrar nada si DATABASE_URL no es
+  // local y no hay confirmacion explicita (ver src/lib/seed-guard.ts).
+  assertSeedAllowed(process.env.DATABASE_URL, process.env.SEED_CONFIRM);
+
   const passwordHash = await hashPassword(SEED_PASSWORD);
 
   // Limpiar tablas en orden seguro para relaciones
