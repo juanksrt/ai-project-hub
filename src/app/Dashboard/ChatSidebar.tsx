@@ -104,6 +104,8 @@ export default function ChatSidebar({ projectId }: ChatSidebarProps) {
         const response = await fetch('/api/chat', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
+          // Envia las cookies de sesion: /api/chat devuelve 401 sin ellas.
+          credentials: 'include',
           body: JSON.stringify({
             messages: history.map(({ role, content }) => ({ role, content })),
             projectId,
@@ -116,7 +118,15 @@ export default function ChatSidebar({ projectId }: ChatSidebarProps) {
             throw new Error('Inicia sesión para usar el asistente RAG.');
           }
 
-          const body = (await response.json().catch(() => null)) as { error?: string } | null;
+          // Solo se parsea JSON si el servidor lo devolvio como tal: un
+          // proxy o un 502 con HTML romperia response.json().
+          const isJson = (response.headers.get('content-type') ?? '')
+            .toLowerCase()
+            .includes('application/json');
+          const body = isJson
+            ? ((await response.json().catch(() => null)) as { error?: string } | null)
+            : null;
+
           throw new Error(body?.error ?? `El asistente ha fallado (HTTP ${response.status}).`);
         }
 

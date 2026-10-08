@@ -77,6 +77,10 @@ jobs:
 
       - name: Build Application
         run: npm run build
+        env:
+          # El prebuild falla sin AUTH_SECRET (P1-1): CI usa su propio valor;
+          # el de produccion vive en Vercel.
+          AUTH_SECRET: ${{ secrets.AUTH_SECRET }}
 
   security-review:
     name: Security Review & Audit

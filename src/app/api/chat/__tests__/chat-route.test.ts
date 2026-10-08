@@ -10,6 +10,7 @@ const {
   lexicalSearchMock,
   hasGoogleCredentialsMock,
   findManyMock,
+  projectFindUniqueMock,
 } = vi.hoisted(() => ({
   authMock: vi.fn(),
   streamTextMock: vi.fn(),
@@ -18,6 +19,7 @@ const {
   lexicalSearchMock: vi.fn(),
   hasGoogleCredentialsMock: vi.fn(() => true),
   findManyMock: vi.fn(),
+  projectFindUniqueMock: vi.fn(),
 }));
 
 vi.mock('@/auth', () => ({ auth: authMock }));
@@ -33,7 +35,10 @@ vi.mock('@ai-sdk/google', () => ({
 }));
 
 vi.mock('@/lib/prisma', () => ({
-  getPrisma: () => ({ documentChunk: { findMany: findManyMock } }),
+  getPrisma: () => ({
+    documentChunk: { findMany: findManyMock },
+    project: { findUnique: projectFindUniqueMock },
+  }),
 }));
 
 // Se reemplazan solo las funciones de recuperacion; el resto (clases de error,
@@ -122,6 +127,8 @@ describe('POST /api/chat', () => {
     similaritySearchMock.mockResolvedValue([HIT]);
     lexicalSearchMock.mockResolvedValue([HIT]);
     findManyMock.mockResolvedValue([DOCUMENT_CHUNK]);
+    // Por defecto el proyecto del payload pertenece al usuario de la sesion.
+    projectFindUniqueMock.mockResolvedValue({ ownerId: 'user-1' });
     createTextStreamResponseMock.mockImplementation(
       ({ headers, stream }: { headers: HeadersInit; stream: ReadableStream<string> }) =>
         new Response(stream.pipeThrough(new TextEncoderStream()), { status: 200, headers }),
@@ -229,6 +236,84 @@ describe('POST /api/chat', () => {
     expect(badProject.status).toBe(400);
   });
 
+  describe('autorizacion del proyecto (P0-1)', () => {
+    it('responde 404 si el proyecto no existe', async () => {
+      projectFindUniqueMock.mockResolvedValue(null);
+
+      const response = await POST(
+        makeRequest({ messages: VALID_MESSAGES, projectId: PROJECT_ID }),
+      );
+      const body = (await response.json()) as ChatErrorResponse;
+
+      expect(response.status).toBe(404);
+      expect(body.error).toBe('Proyecto no encontrado');
+      expect(projectFindUniqueMock).toHaveBeenCalledWith({
+        where: { id: PROJECT_ID },
+        select: { ownerId: true },
+      });
+      // Nada de contexto ni LLM antes de resolver el acceso.
+      expect(similaritySearchMock).not.toHaveBeenCalled();
+      expect(findManyMock).not.toHaveBeenCalled();
+      expect(streamTextMock).not.toHaveBeenCalled();
+    });
+
+    it('responde 403 si el proyecto pertenece a otro usuario', async () => {
+      projectFindUniqueMock.mockResolvedValue({ ownerId: 'user-ajeno' });
+
+      const response = await POST(
+        makeRequest({ messages: VALID_MESSAGES, projectId: PROJECT_ID }),
+      );
+      const body = (await response.json()) as ChatErrorResponse;
+
+      expect(response.status).toBe(403);
+      expect(body.error).toBe('Sin acceso a este proyecto');
+      expect(similaritySearchMock).not.toHaveBeenCalled();
+      expect(findManyMock).not.toHaveBeenCalled();
+      expect(streamTextMock).not.toHaveBeenCalled();
+    });
+
+    it('permite la consulta al propietario sin importar el rol', async () => {
+      authMock.mockResolvedValue({ user: { id: 'user-1', role: 'MEMBER' } });
+      projectFindUniqueMock.mockResolvedValue({ ownerId: 'user-1' });
+
+      const response = await POST(
+        makeRequest({ messages: VALID_MESSAGES, projectId: PROJECT_ID }),
+      );
+
+      expect(response.status).toBe(200);
+      expect(projectFindUniqueMock).toHaveBeenCalledWith({
+        where: { id: PROJECT_ID },
+        select: { ownerId: true },
+      });
+      expect(similaritySearchMock).toHaveBeenCalledWith('¿Como funciona el RAG?', {
+        projectId: PROJECT_ID,
+        topK: 5,
+      });
+    });
+
+    it('permite a un ADMIN consultar un proyecto ajeno', async () => {
+      authMock.mockResolvedValue({ user: { id: 'user-1', role: 'ADMIN' } });
+      projectFindUniqueMock.mockResolvedValue({ ownerId: 'user-ajeno' });
+
+      const response = await POST(
+        makeRequest({ messages: VALID_MESSAGES, projectId: PROJECT_ID }),
+      );
+
+      expect(response.status).toBe(200);
+      expect(similaritySearchMock).toHaveBeenCalledWith('¿Como funciona el RAG?', {
+        projectId: PROJECT_ID,
+        topK: 5,
+      });
+    });
+
+    it('no consulta la propiedad del proyecto si la peticion no trae projectId', async () => {
+      const response = await POST(makeRequest({ messages: VALID_MESSAGES }));
+
+      expect(response.status).toBe(200);
+      expect(projectFindUniqueMock).not.toHaveBeenCalled();
+    });
+  });
+
   it('responde 500 si la busqueda vectorial falla', async () => {
     similaritySearchMock.mockRejectedValue(new Error('conexion rechazada'));
 
@@ -262,6 +347,11 @@ describe('POST /api/chat', () => {
     expect(findManyMock).toHaveBeenCalledWith(
       expect.objectContaining({ where: { document: { projectId: PROJECT_ID } } }),
     );
+    // La propiedad del proyecto se comprueba antes de recuperar contexto.
+    expect(projectFindUniqueMock).toHaveBeenCalledWith({
+      where: { id: PROJECT_ID },
+      select: { ownerId: true },
+    });
 
     const streamTextOptions = lastStreamTextCall();
 
