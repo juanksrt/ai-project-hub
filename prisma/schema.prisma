@@ -175,6 +175,11 @@ model DocumentChunk {
   chunkIndex Int
   createdAt  DateTime @default(now())
 
+  // `findDocumentChunks` (POST /api/chat) filtra por `document.projectId`, lo
+  // que PostgreSQL resuelve recorriendo los chunks de cada documento: sin este
+  // indice la tabla entera hace seq scan en cada pregunta del chat.
+  @@index([documentId])
+
   // Nota: Para PostgreSQL con pgvector en Supabase/Neon, los vectores de embeddings
   // se gestionan mediante consultas SQL puras o integraciones de Vercel AI SDK.
 }
